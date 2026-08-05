@@ -454,8 +454,16 @@ class WmsFileHandler(FileSystemEventHandler):
         time.sleep(FILE_STABLE_WAIT_SEC)
 
         self.processed_recently[filepath] = time.time()
-        process_file(filepath, self.engine, self.cache_conn, self.dong_cache)
-        cleanup_old_downloads(WATCH_FOLDER)
+        # process_file/cleanup에서 예외가 나면 watchdog 라이브러리의 이벤트 디스패치 스레드까지
+        # 같이 죽어서, 그 뒤로 새 파일이 계속 쌓여도 영원히 처리가 안 되는 문제가 있었음
+        # (2026-08-05, 13,126건 대량 반영 직후 watchdog가 조용히 멈춰서 몇 시간째 갱신이
+        #  안 되던 걸 발견 — 프로세스는 살아있는데 이후 어떤 파일도 처리하지 않는 상태였음).
+        # 그래서 여기서 반드시 예외를 잡아 로그만 남기고, 디스패치 스레드는 항상 살려둔다.
+        try:
+            process_file(filepath, self.engine, self.cache_conn, self.dong_cache)
+            cleanup_old_downloads(WATCH_FOLDER)
+        except Exception:
+            log.exception(f"파일 처리 중 예외 발생 (계속 감시는 유지됨): {filepath}")
 
     def on_created(self, event):
         if not event.is_directory:
@@ -499,6 +507,19 @@ def main():
     try:
         while True:
             time.sleep(POLL_INTERVAL_SEC)
+            # observer(감시 스레드)가 무슨 이유로든 죽어있으면 새 파일이 계속 쌓여도
+            # 영원히 처리가 안 되는데, 겉으로는 프로세스가 멀쩡히 살아있는 것처럼 보여서
+            # 알아채기 어려움 (2026-08-05, 몇 시간째 조용히 멈춰있던 걸 뒤늦게 발견).
+            # 그래서 주기적으로 살아있는지 확인하고, 죽어있으면 바로 재생성해서 다시 붙인다.
+            if not observer.is_alive():
+                log.error("감시 스레드(observer)가 죽어있는 것을 감지 — 재시작합니다.")
+                try:
+                    observer = Observer()
+                    observer.schedule(handler, WATCH_FOLDER, recursive=False)
+                    observer.start()
+                    log.info("감시 스레드 재시작 완료.")
+                except Exception:
+                    log.exception("감시 스레드 재시작 실패 — 다음 주기에 다시 시도합니다.")
     except KeyboardInterrupt:
         observer.stop()
         log.info("에이전트 종료 요청 받음")
