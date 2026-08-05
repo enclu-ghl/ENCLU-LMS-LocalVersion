@@ -295,7 +295,13 @@ def process_file(filepath, engine, cache_conn, dong_cache):
 
     for _, row in df.iterrows():
         mgmt_no = str(row[COL_MGMT_NO]).strip()
-        product_code = str(row[COL_PRODUCT_CODE]).strip()
+        # WMS가 같은 상품의 상품코드를 어떤 날은 '3727', 어떤 날은 '03727'처럼 앞자리 0
+        # 유무를 다르게 내려주는 경우가 있어, 이를 그대로 키에 쓰면 같은 상품이 서로 다른
+        # order_key로 갈라져 상태 추적이 끊기는 버그가 있었음 (2026-08-05, 대시보드 잔여
+        # 과다집계로 발견). 앞자리 0을 제거해 정규화한 값을 키로 사용해 이 둘을 항상
+        # 같은 order_key로 합친다.
+        product_code_raw = str(row[COL_PRODUCT_CODE]).strip()
+        product_code = product_code_raw.lstrip("0") or "0"
         order_key = f"{mgmt_no}_{product_code}"
 
         status = str(row[COL_STATUS]).strip()
