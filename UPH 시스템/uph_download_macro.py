@@ -55,6 +55,17 @@ CLICK_DELAY    = 0.4   # 클릭 사이 딜레이(초)
 # 조정 필요 — 너무 좁히면 오래된 미배송 건의 상태 변화를 놓칠 수 있음.
 START_OFFSET_DAYS = -4   # 발주일 시작 = 오늘 - N일 (평시 1~2일, 행사기간 3~4일 지연 감안 — 특이사항은 별도 확인 or 추후 조정)
 END_OFFSET_DAYS   = 0    # 발주일 끝 = 오늘 (미래로 잡을 이유 없음)
+
+# ── 오래된 미배송 잔여 재확인(reconciliation) 설정 ──
+# 평소 회차는 발주일 -4일~오늘만 보기 때문에, 그보다 더 오래전에 발주됐는데 아직 '송장'
+# 상태로 잡혀있던 주문이 나중에 실제로 배송 처리돼도 그 변화를 영영 알 수 없는 문제가 있었음
+# (2026-08-05, 대시보드 '총 잔여'가 WMS 실제 '송장' 건수보다 계속 부풀려지는 버그로 발견 —
+#  발주일 -4일 밖으로 밀려난 주문은 이후 상태가 바뀌어도 재조회 대상에서 빠지기 때문).
+# 그래서 주기적으로 훨씬 넓은(오래된) 발주일 범위를 한 번씩 추가로 훑어서 상태 변화를 반영한다.
+RECON_START_OFFSET_DAYS = -60                       # 재확인 조회 시작 = 오늘 - 60일
+RECON_END_OFFSET_DAYS = START_OFFSET_DAYS - 1       # 평소 조회 범위 바로 앞까지 (겹치지 않게)
+RECON_INTERVAL_SEC = 3 * 60 * 60                    # 3시간마다 한 번씩 재확인 회차 실행
+
 POLL_INTERVAL_SEC = 5   # 다운로드관리자 진척도 재확인 주기(초)
 LOOP_INTERVAL_SEC = 90  # 한 회차 끝나고 다음 회차 시작까지 대기 시간(초)
 # 행사 기간에는 물량이 많아 다운로드 준비가 오래 걸릴 수 있어 최대 시도 횟수 제한을 두지 않음
@@ -259,12 +270,14 @@ def goto_extended_order_search(driver):
     time.sleep(1.0)
 
 
-def set_search_conditions(driver, baseline=False):
+def set_search_conditions(driver, baseline=False, start_offset_days=None, end_offset_days=None):
     status_text = STATUS_OPTION_TEXT_BASELINE if baseline else STATUS_OPTION_TEXT_NORMAL
-    log(f"② 검색조건 설정 (발주일 {START_OFFSET_DAYS}일~{END_OFFSET_DAYS}일 / 상태={status_text} / 다운로드항목=UPH현황)")
+    start_offset = START_OFFSET_DAYS if start_offset_days is None else start_offset_days
+    end_offset = END_OFFSET_DAYS if end_offset_days is None else end_offset_days
+    log(f"② 검색조건 설정 (발주일 {start_offset}일~{end_offset}일 / 상태={status_text} / 다운로드항목=UPH현황)")
     today = datetime.now()
-    start_str = (today + timedelta(days=START_OFFSET_DAYS)).strftime("%Y-%m-%d")
-    end_str = (today + timedelta(days=END_OFFSET_DAYS)).strftime("%Y-%m-%d")
+    start_str = (today + timedelta(days=start_offset)).strftime("%Y-%m-%d")
+    end_str = (today + timedelta(days=end_offset)).strftime("%Y-%m-%d")
 
     set_input_value(driver, START_DATE_INPUT, start_str)
     set_input_value(driver, END_DATE_INPUT, end_str)
@@ -542,7 +555,7 @@ def poll_download_manager(driver, new_handle, request_click_time):
 # ─────────────────────────────────────────
 #  실행 진입점
 # ─────────────────────────────────────────
-def run_download_macro(driver, baseline=False):
+def run_download_macro(driver, baseline=False, start_offset_days=None, end_offset_days=None):
     main_handle = driver.current_window_handle
     t0 = time.time()
 
@@ -550,7 +563,8 @@ def run_download_macro(driver, baseline=False):
     clear_stray_popups(driver)
 
     goto_extended_order_search(driver)
-    set_search_conditions(driver, baseline=baseline)
+    set_search_conditions(driver, baseline=baseline,
+                           start_offset_days=start_offset_days, end_offset_days=end_offset_days)
     click_search(driver)
 
     new_handle, request_click_time = click_download_and_handle_popups(driver)
@@ -611,13 +625,25 @@ def run_forever():
 
     consecutive_reconnect_failures = 0
     round_no = 0
+    last_recon_time = 0   # 아직 한 번도 재확인 안 함 -> 기준선 설정 끝나면 곧바로 1회 실행됨
     while True:
         round_no += 1
         baseline_mode = not os.path.exists(BASELINE_FLAG_FILE)
-        log(f"===== {round_no}회차 시작 {'(기준선 설정 모드)' if baseline_mode else ''} =====")
+        is_recon_round = (not baseline_mode) and (time.time() - last_recon_time >= RECON_INTERVAL_SEC)
+
+        if is_recon_round:
+            log(f"===== {round_no}회차 시작 (오래된 잔여 재확인 모드: 발주일 "
+                f"{RECON_START_OFFSET_DAYS}~{RECON_END_OFFSET_DAYS}일) =====")
+        else:
+            log(f"===== {round_no}회차 시작 {'(기준선 설정 모드)' if baseline_mode else ''} =====")
 
         try:
-            success = run_download_macro(driver, baseline=baseline_mode)
+            if is_recon_round:
+                success = run_download_macro(driver, baseline=False,
+                                              start_offset_days=RECON_START_OFFSET_DAYS,
+                                              end_offset_days=RECON_END_OFFSET_DAYS)
+            else:
+                success = run_download_macro(driver, baseline=baseline_mode)
             consecutive_reconnect_failures = 0
             if success:
                 log("[DONE] 다운로드 매크로 정상 완료")
@@ -627,7 +653,13 @@ def run_forever():
                     log(f"기준선 설정 완료 표시 파일 생성: {BASELINE_FLAG_FILE}")
             else:
                 log("[FAIL] 다운로드 매크로 비정상 종료")
+            if is_recon_round:
+                # 성공/실패 여부와 무관하게 시각을 갱신 — 실패했다고 90초마다 무겁게 재시도하지 않고
+                # 다음 정규 주기(RECON_INTERVAL_SEC)에 다시 시도한다.
+                last_recon_time = time.time()
         except Exception as e:
+            if is_recon_round:
+                last_recon_time = time.time()
             if _is_dead_session_error(e):
                 # 창/세션이 죽은 케이스는 스택트레이스 도배 없이 짧게만 남긴다 (반복 발생 시 로그가
                 # 순식간에 수백 줄씩 불어나는 걸 방지).
