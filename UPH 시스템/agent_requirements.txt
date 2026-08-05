@@ -1,0 +1,9 @@
+watchdog
+pandas
+xlrd
+openpyxl
+lxml
+sqlalchemy
+psycopg2-binary
+python-dotenv
+selenium

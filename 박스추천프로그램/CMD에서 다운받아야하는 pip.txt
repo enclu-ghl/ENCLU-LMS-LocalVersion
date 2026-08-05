@@ -1,0 +1,12 @@
+기본 파이썬 다운 3.8 이상 권장
+
+pip install openpyxl
+pip install pandas
+pip install PyMuPDF
+pip install sqlalchemy
+pip install psycopg2-binary
+pip install tkinterdnd2
+pip install matplotlib
+pip install python-dotenv
+
+pip install openpyxl pandas PyMuPDF sqlalchemy psycopg2-binary tkinterdnd2 matplotlib python-dotenv

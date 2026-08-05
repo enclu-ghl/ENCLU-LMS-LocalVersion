@@ -1,0 +1,5 @@
+pip install selenium webdriver-manager
+
+(확인)
+pip show selenium
+pip show webdriver-manager

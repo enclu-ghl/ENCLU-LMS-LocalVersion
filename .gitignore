@@ -1,0 +1,24 @@
+# 이미 별도 GitHub 저장소로 관리 중 (enclu-ghl/inventory-check)
+웹으로 진행 중인 건/
+
+# 비밀정보
+.env
+*.env
+
+# 파이썬
+__pycache__/
+*.pyc
+venv/
+*.egg-info/
+
+# 로그 / 캐시 / 런타임 산출물
+*.log
+*.sqlite3
+*.flag
+
+# 실제 다운로드된 업무 데이터 (민감정보 가능성)
+UPH 시스템/Download the Uph file/*
+
+# 실제 서버 설정 파일
+박스추천프로그램/pg_hba.conf
+박스추천프로그램/postgresql.conf
