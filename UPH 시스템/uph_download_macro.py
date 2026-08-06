@@ -18,6 +18,11 @@ UPH WMS 배송파일 자동 다운로드 매크로 (Selenium 기반)
 주의: 다운로드가 실제로 감시폴더에 떨어지려면, 이 스크립트가 붙는 디버그 크롬의
 chrome://settings/downloads 에서 다운로드 위치가 미리 감시폴더로 지정되어 있어야 함.
 
+⚠️ 2026-08-06부터: "내 요청" 행 판별을 다운로드관리자 목록의 맨 위 행으로 단순화함
+(find_my_request_row 참고). 이 방식은 로그인 계정이 이 매크로 전용(다른 직원/다른 화면과
+비공유)일 때만 안전하다 — 계정을 같이 쓰는 동안에는 다른 사람 요청이 위에 낄 수 있어 엉뚱한
+행을 잘못 집을 위험이 있음. 전용 계정 전환 전이라면 이 부분을 실제 운영에 쓰지 말 것.
+
 필요 패키지: selenium (Chrome/chromedriver는 시스템에 설치되어 있어야 함)
 """
 
@@ -114,17 +119,21 @@ DLMGR_FILE_LINK         = "a.txt-link.black"
 DLMGR_REQTIME_CELL      = "td[aria-describedby$='_crdate']"     # 요청시간 컬럼
 DLMGR_PAGE_CELL         = "td[aria-describedby$='_template']"   # 페이지 컬럼
 
-# '내 요청' 판별 기준: 페이지명이 일치하고, 요청시간이 클릭 시각 근처(오차 허용범위 이내)인 행
-EXPECTED_PAGE_TEXT              = "확장주문검색2"
-# 행을 아예 못 찾는 단계에서 재시도할 최대 횟수 (POLL_INTERVAL_SEC=5초 기준 2분).
-# 행을 찾은 뒤 100%가 될 때까지 기다리는 단계는 대용량 리포트 생성 시간을 감안해 의도적으로
-# 무제한 대기지만, "행 자체를 못 찾는" 건 서버-PC 시계 오차 등으로 매칭 조건이 애초에 안 맞는
-# 경우라 아무리 재시도해도 못 찾는 채로 영원히 도는 문제가 있었음 (2026-08-06, 291회차 넘게
-# 계속 재시도만 하다 사람이 직접 재시작해야 했던 사고로 발견). 이 단계만 별도로 한도를 둬서,
-# 한도를 넘으면 이번 회차를 포기하고 예외를 던져 run_forever()가 다음 회차로 넘어가게 한다.
-ROW_SEARCH_MAX_ATTEMPTS         = 24
-REQTIME_TOLERANCE_BEFORE_SEC    = 2    # 기준 시각보다 이만큼 이전까지는 시계 오차로 허용
-REQTIME_TOLERANCE_AFTER_SEC     = 8    # 기준 시각 이후 이 시간 안에 등록된 요청만 후보로 인정
+# '내 요청' 판별 기준
+# ⚠️ 전제조건: 이 다운로드관리자 계정은 이 매크로 전용이어야 한다 (다른 직원/다른 화면과
+# 공유 금지). 전용 계정이라면 목록에 이 매크로가 넣은 요청만 쌓이고, 매크로는 순차적으로
+# (한 요청 완료 후 다음 요청) 돌기 때문에 "목록 맨 위 = 방금 내가 넣은 요청"이 항상 성립한다.
+# 그래서 요청 클릭시각과 정교하게 시각을 맞춰볼 필요 없이 맨 위 행을 그대로 쓴다.
+# 계정을 공유하는 동안에는 이 방식을 쓰면 안 된다 — 다른 사람 요청이 위에 낄 수 있음.
+#
+# (예전엔 페이지명+요청시각(±허용오차)으로 정교하게 매칭했는데, 서버-PC 시계 오차 등으로
+#  매칭 조건이 애초에 안 맞으면 몇 번을 재시도해도 절대 못 찾아 무한정 도는 문제가 있었음
+#  — 2026-08-06, 291회차 넘게 멈춰있던 사고로 발견. 전용 계정 + 맨 위 행 전제로 이 문제
+#  자체를 구조적으로 없앤다.)
+EXPECTED_PAGE_TEXT       = "확장주문검색2"   # 맨 위 행이 정말 이 페이지 요청인지 확인하는 최소 안전장치
+# 목록에 행 자체가 안 뜨거나, 맨 위 행의 페이지명이 기대와 다른 경우(아직 갱신 전 등)의 재시도 한도.
+# 행을 찾은 뒤 100%가 될 때까지 기다리는 단계는 대용량 리포트 생성 시간을 감안해 여전히 무제한.
+ROW_SEARCH_MAX_ATTEMPTS  = 24   # POLL_INTERVAL_SEC=5초 기준 2분
 
 
 # ─────────────────────────────────────────
@@ -212,15 +221,6 @@ def wait_gone(driver, selector, timeout=WAIT_TIMEOUT):
         )
     except TimeoutException:
         pass
-
-
-def _parse_dlmgr_datetime(text):
-    """다운로드관리자 목록의 '요청시간' 셀 텍스트('2026-07-27 17:43:10')를 datetime으로 파싱.
-    형식이 다르면(예: 초 단위 없음) None 반환 -> 호출부에서 해당 행을 후보에서 제외."""
-    try:
-        return datetime.strptime(text.strip(), "%Y-%m-%d %H:%M:%S")
-    except Exception:
-        return None
 
 
 def debug_dump_row_columns(driver, max_rows=3):
@@ -439,52 +439,32 @@ def click_download_and_handle_popups(driver):
     return new_handle, request_click_time
 
 
-def _find_request_row_candidates(rows, request_click_time):
-    """페이지명 일치 + 요청시간이 클릭시각 근처(허용오차 이내)인 행들을 후보로 추출.
-    (다운로드관리자 목록은 계정 전체 공유라, 다른 직원/다른 화면의 요청이 섞여 들어올 수 있음)"""
-    lower_bound = request_click_time - timedelta(seconds=REQTIME_TOLERANCE_BEFORE_SEC)
-    upper_bound = request_click_time + timedelta(seconds=REQTIME_TOLERANCE_AFTER_SEC)
-
-    candidates = []
-    for row in rows:
-        try:
-            page_text = row.find_element(By.CSS_SELECTOR, DLMGR_PAGE_CELL).text.strip()
-            if page_text != EXPECTED_PAGE_TEXT:
-                continue
-            reqtime_text = row.find_element(By.CSS_SELECTOR, DLMGR_REQTIME_CELL).text.strip()
-            reqtime_dt = _parse_dlmgr_datetime(reqtime_text)
-            if reqtime_dt is None:
-                continue
-            if lower_bound <= reqtime_dt <= upper_bound:
-                candidates.append((row, reqtime_text, reqtime_dt))
-        except (NoSuchElementException, StaleElementReferenceException):
-            continue
-    return candidates
-
-
-def find_my_request_row(rows, request_click_time):
+def find_my_request_row(rows):
     """'내 요청'으로 추정되는 행 하나를 확정. 반환: (target_row, 요청시간_문자열) 또는 (None, None).
-    후보가 여러 개면 클릭 시각과 가장 가까운 것을 선택하되, 반드시 경고 로그를 남긴다
-    (완전한 오판별 가능성을 배제할 수 없으므로, 사고 발생 시 로그로 추적 가능하게)."""
-    candidates = _find_request_row_candidates(rows, request_click_time)
-    if not candidates:
+
+    ⚠️ 이 함수는 다운로드관리자 계정이 이 매크로 전용(다른 사람과 비공유)이라는 전제 하에
+    동작한다 — 목록이 최신순 정렬이라고 보고 그냥 맨 위 행을 쓴다. 페이지명만 최소한으로
+    확인해서, 아직 목록이 갱신되기 전이거나(요청이 화면에 반영되기 직전) 뭔가 예상과 다르면
+    None을 반환해 재시도하게 한다."""
+    if not rows:
         return None, None
-
-    if len(candidates) > 1:
-        candidates.sort(key=lambda c: abs((c[2] - request_click_time).total_seconds()))
-        others = [c[1] for c in candidates[1:]]
-        log(f"    [WARN] 페이지='{EXPECTED_PAGE_TEXT}' + 시간대 조건에 맞는 후보가 {len(candidates)}건 "
-            f"발견됨 — 클릭시각과 가장 가까운 행을 선택함. (제외된 후보 요청시간: {others})")
-
-    target_row, reqtime_text, _ = candidates[0]
-    return target_row, reqtime_text
+    top_row = rows[0]
+    try:
+        page_text = top_row.find_element(By.CSS_SELECTOR, DLMGR_PAGE_CELL).text.strip()
+        reqtime_text = top_row.find_element(By.CSS_SELECTOR, DLMGR_REQTIME_CELL).text.strip()
+    except (NoSuchElementException, StaleElementReferenceException):
+        return None, None
+    if page_text != EXPECTED_PAGE_TEXT:
+        log(f"    [WARN] 맨 위 행의 페이지가 '{EXPECTED_PAGE_TEXT}'가 아니라 '{page_text}' — "
+            f"아직 목록 갱신 전이거나 이 계정에 다른 요청이 섞였을 수 있음")
+        return None, None
+    return top_row, reqtime_text
 
 
 def poll_download_manager(driver, new_handle, request_click_time):
     log("⑤ 다운로드관리자 새 창에서 진척도 폴링 시작 (완료될 때까지 무한 대기)")
-    log(f"    내 요청 클릭시각(기준): {request_click_time:%Y-%m-%d %H:%M:%S}, "
-        f"허용오차: -{REQTIME_TOLERANCE_BEFORE_SEC}초 ~ +{REQTIME_TOLERANCE_AFTER_SEC}초, "
-        f"페이지 조건: '{EXPECTED_PAGE_TEXT}'")
+    log(f"    내 요청 클릭시각: {request_click_time:%Y-%m-%d %H:%M:%S} — "
+        f"전용 계정 전제로 목록 맨 위 행을 내 요청으로 간주 (페이지 조건: '{EXPECTED_PAGE_TEXT}')")
     driver.switch_to.window(new_handle)
     time.sleep(1.0)
     poll_start = time.time()
@@ -507,14 +487,13 @@ def poll_download_manager(driver, new_handle, request_click_time):
             continue
 
         if locked_reqtime_text is None:
-            target_row, matched_reqtime = find_my_request_row(rows, request_click_time)
+            target_row, matched_reqtime = find_my_request_row(rows)
             if target_row is None:
                 if attempt >= ROW_SEARCH_MAX_ATTEMPTS:
                     raise TimeoutException(
                         f"내 요청 행을 {ROW_SEARCH_MAX_ATTEMPTS}회 시도({attempt * POLL_INTERVAL_SEC}초)"
-                        f"해도 못 찾음 — 요청시각(기준)={request_click_time:%H:%M:%S}, "
-                        f"허용오차=-{REQTIME_TOLERANCE_BEFORE_SEC}~+{REQTIME_TOLERANCE_AFTER_SEC}초. "
-                        f"서버-PC 시계 오차 등으로 매칭 조건 자체가 안 맞을 가능성이 높음."
+                        f"해도 못 찾음 — 맨 위 행의 페이지명이 계속 '{EXPECTED_PAGE_TEXT}'가 아니었음. "
+                        f"이 계정을 다른 화면/사람과 같이 쓰고 있지 않은지 확인 필요."
                     )
                 log(f"    [{attempt}회차] 내 요청으로 추정되는 행을 아직 못 찾음, "
                     f"{POLL_INTERVAL_SEC}초 후 재시도")
@@ -523,18 +502,28 @@ def poll_download_manager(driver, new_handle, request_click_time):
             locked_reqtime_text = matched_reqtime
             log(f"    내 요청 행 식별됨 (요청시간={locked_reqtime_text})")
         else:
-            # 이미 식별된 요청시간 문자열로 재조회. DOM 요소를 캐시해두면 매 폴링마다
-            # stale 해질 수 있고, 새 행이 위에 추가되며 순서도 바뀔 수 있어 매번 재탐색한다.
+            # 정상 상황이라면 맨 위 행이 계속 내 요청이어야 하지만(전용 계정 + 순차 실행),
+            # 혹시 몰라 요청시간 문자열로 한 번 더 확인하고, 안 맞으면 전체 목록에서 재탐색한다.
             target_row = None
-            for row in rows:
-                try:
-                    page_text = row.find_element(By.CSS_SELECTOR, DLMGR_PAGE_CELL).text.strip()
-                    reqtime_text = row.find_element(By.CSS_SELECTOR, DLMGR_REQTIME_CELL).text.strip()
-                    if page_text == EXPECTED_PAGE_TEXT and reqtime_text == locked_reqtime_text:
-                        target_row = row
-                        break
-                except (NoSuchElementException, StaleElementReferenceException):
-                    continue
+            try:
+                top_reqtime = rows[0].find_element(By.CSS_SELECTOR, DLMGR_REQTIME_CELL).text.strip()
+                if top_reqtime == locked_reqtime_text:
+                    target_row = rows[0]
+            except (NoSuchElementException, StaleElementReferenceException):
+                pass
+
+            if target_row is None:
+                for row in rows:
+                    try:
+                        reqtime_text = row.find_element(By.CSS_SELECTOR, DLMGR_REQTIME_CELL).text.strip()
+                        if reqtime_text == locked_reqtime_text:
+                            target_row = row
+                            log(f"    [WARN] 내 요청 행이 맨 위가 아니었음(요청시간={locked_reqtime_text}) "
+                                f"— 이 계정에 다른 요청이 섞였을 가능성, 확인 필요")
+                            break
+                    except (NoSuchElementException, StaleElementReferenceException):
+                        continue
+
             if target_row is None:
                 log(f"    [{attempt}회차] 식별했던 행(요청시간={locked_reqtime_text})을 목록에서 "
                     f"못 찾음(목록 보관기간 초과 등), {POLL_INTERVAL_SEC}초 후 재시도")
