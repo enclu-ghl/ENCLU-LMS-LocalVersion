@@ -116,6 +116,13 @@ DLMGR_PAGE_CELL         = "td[aria-describedby$='_template']"   # 페이지 컬�
 
 # '내 요청' 판별 기준: 페이지명이 일치하고, 요청시간이 클릭 시각 근처(오차 허용범위 이내)인 행
 EXPECTED_PAGE_TEXT              = "확장주문검색2"
+# 행을 아예 못 찾는 단계에서 재시도할 최대 횟수 (POLL_INTERVAL_SEC=5초 기준 2분).
+# 행을 찾은 뒤 100%가 될 때까지 기다리는 단계는 대용량 리포트 생성 시간을 감안해 의도적으로
+# 무제한 대기지만, "행 자체를 못 찾는" 건 서버-PC 시계 오차 등으로 매칭 조건이 애초에 안 맞는
+# 경우라 아무리 재시도해도 못 찾는 채로 영원히 도는 문제가 있었음 (2026-08-06, 291회차 넘게
+# 계속 재시도만 하다 사람이 직접 재시작해야 했던 사고로 발견). 이 단계만 별도로 한도를 둬서,
+# 한도를 넘으면 이번 회차를 포기하고 예외를 던져 run_forever()가 다음 회차로 넘어가게 한다.
+ROW_SEARCH_MAX_ATTEMPTS         = 24
 REQTIME_TOLERANCE_BEFORE_SEC    = 2    # 기준 시각보다 이만큼 이전까지는 시계 오차로 허용
 REQTIME_TOLERANCE_AFTER_SEC     = 8    # 기준 시각 이후 이 시간 안에 등록된 요청만 후보로 인정
 
@@ -502,6 +509,13 @@ def poll_download_manager(driver, new_handle, request_click_time):
         if locked_reqtime_text is None:
             target_row, matched_reqtime = find_my_request_row(rows, request_click_time)
             if target_row is None:
+                if attempt >= ROW_SEARCH_MAX_ATTEMPTS:
+                    raise TimeoutException(
+                        f"내 요청 행을 {ROW_SEARCH_MAX_ATTEMPTS}회 시도({attempt * POLL_INTERVAL_SEC}초)"
+                        f"해도 못 찾음 — 요청시각(기준)={request_click_time:%H:%M:%S}, "
+                        f"허용오차=-{REQTIME_TOLERANCE_BEFORE_SEC}~+{REQTIME_TOLERANCE_AFTER_SEC}초. "
+                        f"서버-PC 시계 오차 등으로 매칭 조건 자체가 안 맞을 가능성이 높음."
+                    )
                 log(f"    [{attempt}회차] 내 요청으로 추정되는 행을 아직 못 찾음, "
                     f"{POLL_INTERVAL_SEC}초 후 재시도")
                 time.sleep(POLL_INTERVAL_SEC)
