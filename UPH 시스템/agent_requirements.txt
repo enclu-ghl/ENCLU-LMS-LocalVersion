@@ -1,8 +1,8 @@
-watchdog
 pandas
 xlrd
 openpyxl
 lxml
+beautifulsoup4
 sqlalchemy
 psycopg2-binary
 python-dotenv

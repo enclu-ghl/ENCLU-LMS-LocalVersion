@@ -1,15 +1,21 @@
 """
-ENCLU UPH 실시간 현황판 — 로컬 watchdog 에이전트 (v2)
+ENCLU UPH 실시간 현황판 — 로컬 감시 에이전트 (v3)
+
+v3 변경점 (2026-08-06):
+  - watchdog 라이브러리의 파일 이벤트 감시를 걷어내고 직접 폴링 방식으로 전환.
+    이벤트 방식은 감시를 담당하는 emitter 스레드가 조용히 죽어도 Observer는 살아있는 것으로
+    보여서, 몇 시간씩 새 파일을 하나도 처리 안 하는 상태를 자동으로 알아챌 수 없었음.
 
 v2 변경점 (기존 대비):
-  - detected_at(watchdog이 파일을 감지한 시각) 의존을 제거하고,
+  - detected_at(파일을 감지한 시각) 의존을 제거하고,
     WMS가 실제로 내려주는 업무 일시(송장일_날짜/시간, 배송일_날짜/시간)를 정식 컬럼으로 저장.
   - '배송 보류' 헤더를 그대로 반영해 is_hold 컬럼으로 저장 (기존엔 CS 드롭다운값 중 '보류'를 썼음).
   - 이 3개 값이 바뀔 수 있으므로(특히 보류 해제) 캐시 비교 키에 is_hold 포함.
 
 역할:
-  1. 지정된 감시 폴더(WMS 배송파일 다운로드 폴더)를 상시 감시
-  2. 새 파일이 생기면 읽어서, 각 행(주문 상품 줄)의 상태를 이전 상태와 비교
+  1. 지정된 감시 폴더(WMS 배송파일 다운로드 폴더)를 주기적으로(POLL_INTERVAL_SEC) 확인
+  2. 가장 최신 파일이 아직 처리 안 된 것이면 읽어서, 각 행(주문 상품 줄)의 상태를 이전 상태와 비교
+     (파일 하나가 매번 전체 스냅샷이라 최신 것 하나만 처리하면 충분)
   3. 상태(발주/접수/송장/배송) 또는 CS/보류가 바뀐 행만 Supabase로 push
   4. 판매처 → 동(A/B/F) 매핑은 sales_channel_dong_mapping 테이블을 주기적으로 조회해 반영
 
@@ -17,7 +23,7 @@ v2 변경점 (기존 대비):
   - 개발/테스트: `python watchdog_agent.py`
   - 실제 배포: pythonw.exe로 콘솔창 없이 백그라운드 실행 (ENCLU SCM ALL SYSTEM 런처와 동일 패턴)
 
-필요 패키지: watchdog, pandas, xlrd, openpyxl, sqlalchemy, psycopg2-binary, python-dotenv, beautifulsoup4, lxml
+필요 패키지: pandas, xlrd, openpyxl, sqlalchemy, psycopg2-binary, python-dotenv, beautifulsoup4, lxml
 
 ⚠️ 반드시 migration_uph_v2.sql을 Supabase에 먼저 실행한 뒤 이 에이전트를 가동하세요.
    (order_status_log에 invoice_datetime / delivery_datetime / is_hold 컬럼이 없으면 push_to_db가 실패합니다.)
@@ -37,8 +43,6 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from psycopg2.extras import execute_values
-from watchdog.observers.polling import PollingObserver as Observer
-from watchdog.events import FileSystemEventHandler
 
 # ══════════════════════════════════════════════════════════════
 # 설정 (.env에서 읽음)
@@ -431,47 +435,31 @@ def cleanup_old_downloads(folder, keep_n=KEEP_LATEST_FILES):
 
 
 # ══════════════════════════════════════════════════════════════
-# 폴더 감시 핸들러
+# 폴더 감시 (직접 폴링)
 # ══════════════════════════════════════════════════════════════
-class WmsFileHandler(FileSystemEventHandler):
-    def __init__(self, engine, cache_conn, dong_cache):
-        self.engine = engine
-        self.cache_conn = cache_conn
-        self.dong_cache = dong_cache
-        self.processed_recently = {}  # 파일별 마지막 처리시각 (짧은 시간 내 중복 이벤트 방지)
+def find_latest_wms_file(folder):
+    """감시 폴더에서 가장 최근에 받은 WMS 파일 경로를 반환. 없으면 None."""
+    try:
+        files = [
+            os.path.join(folder, f) for f in os.listdir(folder)
+            if f.lower().endswith((".xls", ".xlsx", ".csv"))
+            and os.path.isfile(os.path.join(folder, f))
+        ]
+    except OSError as e:
+        log.warning(f"감시 폴더 조회 실패: {e}")
+        return None
+    if not files:
+        return None
+    return max(files, key=os.path.getmtime)
 
-    def _handle(self, filepath):
-        if not filepath.lower().endswith((".xls", ".xlsx", ".csv")):
-            return
-        if not os.path.isfile(filepath):
-            return
 
-        last = self.processed_recently.get(filepath, 0)
-        if time.time() - last < 5:
-            return  # 5초 내 중복 이벤트 무시
-
-        # 파일이 완전히 써질 때까지 잠깐 대기 (다운로드 도중 파일 오픈 방지)
-        time.sleep(FILE_STABLE_WAIT_SEC)
-
-        self.processed_recently[filepath] = time.time()
-        # process_file/cleanup에서 예외가 나면 watchdog 라이브러리의 이벤트 디스패치 스레드까지
-        # 같이 죽어서, 그 뒤로 새 파일이 계속 쌓여도 영원히 처리가 안 되는 문제가 있었음
-        # (2026-08-05, 13,126건 대량 반영 직후 watchdog가 조용히 멈춰서 몇 시간째 갱신이
-        #  안 되던 걸 발견 — 프로세스는 살아있는데 이후 어떤 파일도 처리하지 않는 상태였음).
-        # 그래서 여기서 반드시 예외를 잡아 로그만 남기고, 디스패치 스레드는 항상 살려둔다.
-        try:
-            process_file(filepath, self.engine, self.cache_conn, self.dong_cache)
-            cleanup_old_downloads(WATCH_FOLDER)
-        except Exception:
-            log.exception(f"파일 처리 중 예외 발생 (계속 감시는 유지됨): {filepath}")
-
-    def on_created(self, event):
-        if not event.is_directory:
-            self._handle(event.src_path)
-
-    def on_modified(self, event):
-        if not event.is_directory:
-            self._handle(event.src_path)
+def is_file_settled(filepath):
+    """다운로드가 끝나 파일이 안정됐는지 확인 (쓰는 중인 파일을 읽지 않기 위함).
+    마지막 수정 시각이 FILE_STABLE_WAIT_SEC 이상 지났으면 다 받은 것으로 본다."""
+    try:
+        return (time.time() - os.path.getmtime(filepath)) >= FILE_STABLE_WAIT_SEC
+    except OSError:
+        return False
 
 
 # ══════════════════════════════════════════════════════════════
@@ -486,44 +474,30 @@ def main():
     cache_conn = init_cache_db()
     dong_cache = DongMappingCache(engine)
 
-    log.info(f"UPH watchdog 에이전트 시작 (v2) — 감시 폴더: {WATCH_FOLDER}")
+    log.info(f"UPH watchdog 에이전트 시작 (v3) — 감시 폴더: {WATCH_FOLDER}")
 
-    # 시작 시 폴더에 이미 있는 최신 파일 1개는 초기 스캔 (에이전트 재시작 대비)
-    existing_files = [
-        os.path.join(WATCH_FOLDER, f) for f in os.listdir(WATCH_FOLDER)
-        if f.lower().endswith((".xls", ".xlsx", ".csv"))
-    ]
-    if existing_files:
-        latest = max(existing_files, key=os.path.getmtime)
-        log.info(f"초기 스캔 대상 파일: {latest}")
-        process_file(latest, engine, cache_conn, dong_cache)
-        cleanup_old_downloads(WATCH_FOLDER)
-
-    handler = WmsFileHandler(engine, cache_conn, dong_cache)
-    observer = Observer()
-    observer.schedule(handler, WATCH_FOLDER, recursive=False)
-    observer.start()
-
+    # v3 (2026-08-06): watchdog 라이브러리의 파일 이벤트 감시를 걷어내고 직접 폴링으로 전환.
+    # 이벤트 방식은 실제 감시를 담당하는 emitter 스레드가 조용히 죽어도 Observer 객체는
+    # is_alive()=True를 계속 반환해서, "프로세스는 멀쩡한데 몇 시간째 새 파일을 하나도 처리
+    # 안 하는" 상태를 자동으로 알아챌 수 없었다 (2026-08-06, 1~2시간씩 통째로 건너뛴 구간이
+    # 반복되던 걸 로그로 확인). 다운로드 파일은 매번 전체 스냅샷(1.7만 행 전량)이라 최신 파일
+    # 하나만 처리하면 충분하므로, 그냥 주기적으로 폴더를 훑어 가장 최신 파일을 처리한다.
+    # 이러면 감시가 멈추는 실패 모드 자체가 없고, 밀렸을 때도 중간 파일을 건너뛰고 최신 것으로
+    # 바로 따라잡는다.
+    last_processed = None
     try:
         while True:
+            try:
+                latest = find_latest_wms_file(WATCH_FOLDER)
+                if latest and latest != last_processed and is_file_settled(latest):
+                    process_file(latest, engine, cache_conn, dong_cache)
+                    cleanup_old_downloads(WATCH_FOLDER)
+                    last_processed = latest
+            except Exception:
+                log.exception("파일 처리 중 예외 발생 (감시는 계속 유지됨)")
             time.sleep(POLL_INTERVAL_SEC)
-            # observer(감시 스레드)가 무슨 이유로든 죽어있으면 새 파일이 계속 쌓여도
-            # 영원히 처리가 안 되는데, 겉으로는 프로세스가 멀쩡히 살아있는 것처럼 보여서
-            # 알아채기 어려움 (2026-08-05, 몇 시간째 조용히 멈춰있던 걸 뒤늦게 발견).
-            # 그래서 주기적으로 살아있는지 확인하고, 죽어있으면 바로 재생성해서 다시 붙인다.
-            if not observer.is_alive():
-                log.error("감시 스레드(observer)가 죽어있는 것을 감지 — 재시작합니다.")
-                try:
-                    observer = Observer()
-                    observer.schedule(handler, WATCH_FOLDER, recursive=False)
-                    observer.start()
-                    log.info("감시 스레드 재시작 완료.")
-                except Exception:
-                    log.exception("감시 스레드 재시작 실패 — 다음 주기에 다시 시도합니다.")
     except KeyboardInterrupt:
-        observer.stop()
         log.info("에이전트 종료 요청 받음")
-    observer.join()
     cache_conn.close()
 
 
