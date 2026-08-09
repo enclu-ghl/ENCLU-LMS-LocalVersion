@@ -91,6 +91,20 @@ COL_DELIVERY_TIME = "배송일_시간"
 EXTRA_COLS = ["주문번호", "주문상세번호", "옵션명", "로케이션", "바코드",
               "주문일", "주문시간", "발주일", "발주시간", "송장입력일", "주문수량"]
 
+# 취소 계열로 간주해 수량 합계에서 제외할 CS 값.
+# ⚠️ app.py의 CANCELLED_CS_VALUES와 동일하게 유지해야 한다 —
+#    여기서 제외한 수량과 대시보드가 필터링하는 기준이 어긋나면 숫자가 안 맞는다.
+CANCELLED_CS_VALUES = {
+    "취소",
+    "취소(배송전+배송후)",
+    "배송전 취소",
+    "배송후 취소",
+    "배송전 전체취소",
+    "배송후 전체취소",
+    "배송전 전체 취소",
+    "배송후 전체 취소",
+}
+
 REQUIRED_COLS = [COL_MGMT_NO, COL_CHANNEL, COL_STATUS, COL_INVOICE,
                   COL_PRODUCT_CODE, COL_PRODUCT_NAME, COL_CS, COL_QTY,
                   COL_HOLD, COL_INVOICE_DATE, COL_INVOICE_TIME,
@@ -172,40 +186,44 @@ class DongMappingCache:
 # ══════════════════════════════════════════════════════════════
 def init_cache_db():
     conn = sqlite3.connect(CACHE_DB_PATH, check_same_thread=False)
+    # v3 캐시: 키가 (order_key, status)이고 quantity까지 비교한다.
+    # v1/v2 캐시는 order_key 하나만 키로 썼는데, 한 주문상품이 '송장'과 '배송' 두 상태로
+    # 동시에 존재할 수 있어서 캐시 슬롯 하나를 두고 서로 덮어쓰는 문제가 있었다.
+    # DB(order_status_log)의 충돌키와 동일하게 맞춰서 이 어긋남을 없앤다.
+    # 기존 order_cache 테이블은 건드리지 않는다 (롤백 시 되돌아갈 자리).
     conn.execute("""
-        CREATE TABLE IF NOT EXISTS order_cache (
-            order_key TEXT PRIMARY KEY,
-            status TEXT,
-            cs_status TEXT,
-            is_hold INTEGER DEFAULT 0,
-            updated_at TEXT
+        CREATE TABLE IF NOT EXISTS order_cache_v3 (
+            order_key  TEXT NOT NULL,
+            status     TEXT NOT NULL,
+            cs_status  TEXT,
+            is_hold    INTEGER DEFAULT 0,
+            quantity   INTEGER DEFAULT 0,
+            updated_at TEXT,
+            PRIMARY KEY (order_key, status)
         )
     """)
-    # 기존(v1) 캐시 파일에는 is_hold 컬럼이 없을 수 있으므로 안전하게 추가 시도
-    try:
-        conn.execute("ALTER TABLE order_cache ADD COLUMN is_hold INTEGER DEFAULT 0")
-        conn.commit()
-    except sqlite3.OperationalError:
-        pass  # 이미 존재하면 무시
     conn.commit()
     return conn
 
 
 def load_cache_dict(conn):
-    """order_cache 테이블 전체를 한 번에 메모리로 읽어온다 (행마다 SQLite 왕복하는 것 방지)."""
-    cur = conn.execute("SELECT order_key, status, cs_status, is_hold FROM order_cache")
-    return {row[0]: (row[1], row[2], bool(row[3])) for row in cur.fetchall()}
+    """order_cache_v3 전체를 한 번에 메모리로 읽어온다 (행마다 SQLite 왕복하는 것 방지).
+    반환: {(order_key, status): (cs_status, is_hold, quantity)}"""
+    cur = conn.execute("SELECT order_key, status, cs_status, is_hold, quantity FROM order_cache_v3")
+    return {(r[0], r[1]): (r[2], bool(r[3]), int(r[4] or 0)) for r in cur.fetchall()}
 
 
 def bulk_save_cache(conn, updates):
-    """변경된 캐시 항목들을 한 번에 upsert. updates: [(order_key, status, cs_status, is_hold, updated_at), ...]"""
+    """변경된 캐시 항목들을 한 번에 upsert.
+    updates: [(order_key, status, cs_status, is_hold, quantity, updated_at), ...]"""
     if not updates:
         return
     conn.executemany("""
-        INSERT INTO order_cache (order_key, status, cs_status, is_hold, updated_at)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(order_key) DO UPDATE SET status=excluded.status,
-            cs_status=excluded.cs_status, is_hold=excluded.is_hold, updated_at=excluded.updated_at
+        INSERT INTO order_cache_v3 (order_key, status, cs_status, is_hold, quantity, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(order_key, status) DO UPDATE SET
+            cs_status=excluded.cs_status, is_hold=excluded.is_hold,
+            quantity=excluded.quantity, updated_at=excluded.updated_at
     """, updates)
     conn.commit()
 
@@ -279,6 +297,105 @@ def _parse_html_table_str(html_content):
     return None
 
 
+def merge_duplicate_rows(df, dong_cache):
+    """같은 (order_key, status)로 중복되는 행들을 하나로 병합한다.
+
+    WMS의 'UPH현황' 다운로드에는 행을 유일하게 식별하는 컬럼이 없다. 부분취소·부분교환이
+    섞인 주문은 관리번호·상품코드·주문상세번호·송장번호가 전부 같은 줄이 수량과 CS만
+    다르게 여러 개 내려온다. 실제 확인된 예:
+
+        관리번호=1808854 상품코드=01345 주문상세번호=415421798 수량=1 CS=정상
+        관리번호=1808854 상품코드=01345 주문상세번호=415421798 수량=3 CS=정상
+        관리번호=1808854 상품코드=01345 주문상세번호=415421798 수량=2 CS=배송전 부분 취소
+
+    이걸 그대로 두면 두 가지 문제가 생긴다 (2026-08-09 추적으로 확인):
+      1. 캐시가 매 회차 서로 덮어써서 diffing이 영원히 안정되지 않고, 같은 행이 3분마다
+         무한히 재푸시된다.
+      2. DB는 (order_key, status)로 UPSERT하므로 여러 줄이 1행으로 뭉개지고, quantity가
+         마지막 줄 값으로 덮여 '완료 상품 수량 합계'가 실제보다 적게 나온다.
+
+    병합 규칙:
+      - quantity : 취소 계열 CS인 줄을 뺀 나머지를 합산한다. 대시보드가 취소 건을 어차피
+                   집계에서 제외하므로, 여기서 미리 빼두면 수량이 실제 출고량과 맞는다.
+      - 전부 취소인 그룹 : 취소 상태 그대로 1건 남긴다(수량은 취소분 합계).
+                   대시보드가 필터링할 수 있게 기록 자체는 남겨야 한다.
+      - is_hold  : 남은 줄 중 하나라도 보류면 True (한 줄이라도 잡혀 있으면 그 주문은 못 나감).
+      - 그 외 필드: 첫 줄 값. 중복 줄 사이에서 동일하다.
+
+    반환: {(order_key, status): row dict}
+    """
+    merged = {}
+
+    for _, row in df.iterrows():
+        mgmt_no = str(row[COL_MGMT_NO]).strip()
+        # WMS가 같은 상품의 상품코드를 어떤 날은 '3727', 어떤 날은 '03727'처럼 앞자리 0
+        # 유무를 다르게 내려주는 경우가 있어, 그대로 키에 쓰면 같은 상품이 서로 다른
+        # order_key로 갈라져 상태 추적이 끊긴다 (2026-08-05 확인). 앞자리 0을 제거해 정규화한다.
+        product_code = str(row[COL_PRODUCT_CODE]).strip().lstrip("0") or "0"
+        order_key = f"{mgmt_no}_{product_code}"
+
+        status = str(row[COL_STATUS]).strip()
+        cs_status = str(row[COL_CS]).strip() if pd.notna(row[COL_CS]) else "정상"
+        is_hold = str(row[COL_HOLD]).strip() == "보류" if pd.notna(row[COL_HOLD]) else False
+        try:
+            qty = int(row[COL_QTY]) if pd.notna(row[COL_QTY]) else 1
+        except (TypeError, ValueError):
+            qty = 1
+
+        is_cancelled = cs_status in CANCELLED_CS_VALUES
+        key = (order_key, status)
+        entry = merged.get(key)
+
+        if entry is None:
+            channel_name = str(row[COL_CHANNEL]).strip()
+            extra_data = {
+                col: (None if pd.isna(row[col]) else str(row[col]))
+                for col in EXTRA_COLS
+                if col in df.columns
+            }
+            entry = merged[key] = {
+                "order_key": order_key,
+                "invoice_no": str(row[COL_INVOICE]).strip(),
+                "channel_name": channel_name,
+                "dong": dong_cache.get(channel_name),
+                "product_name": str(row[COL_PRODUCT_NAME]).strip(),
+                "quantity": 0,
+                "status": status,
+                "cs_status": cs_status,
+                "is_hold": False,
+                "invoice_datetime": parse_kst_datetime(row.get(COL_INVOICE_DATE), row.get(COL_INVOICE_TIME)),
+                "delivery_datetime": parse_kst_datetime(row.get(COL_DELIVERY_DATE), row.get(COL_DELIVERY_TIME)),
+                "extra_data": json.dumps(extra_data, ensure_ascii=False),
+                # 병합 과정에서만 쓰는 내부 값 — DB에 넣기 전에 제거한다.
+                "_live_qty": 0,
+                "_cancelled_qty": 0,
+                "_has_live": False,
+            }
+
+        if is_cancelled:
+            entry["_cancelled_qty"] += qty
+        else:
+            entry["_live_qty"] += qty
+            entry["is_hold"] = entry["is_hold"] or is_hold
+            if not entry["_has_live"]:
+                # 살아있는 줄이 처음 나오면 그 CS 값을 대표값으로 삼는다
+                # (초기값이 취소였을 수 있으므로 덮어쓴다)
+                entry["cs_status"] = cs_status
+                entry["_has_live"] = True
+
+    # 내부 값을 정리하고 최종 quantity를 확정한다
+    for entry in merged.values():
+        if entry["_has_live"]:
+            entry["quantity"] = entry["_live_qty"]
+        else:
+            # 전부 취소된 그룹 — 기록은 남기되 대시보드가 걸러낼 수 있게 취소 CS를 유지한다
+            entry["quantity"] = entry["_cancelled_qty"]
+        for k in ("_live_qty", "_cancelled_qty", "_has_live"):
+            del entry[k]
+
+    return merged
+
+
 def process_file(filepath, engine, cache_conn, dong_cache):
     log.info(f"파일 처리 시작: {filepath}")
     try:
@@ -289,70 +406,36 @@ def process_file(filepath, engine, cache_conn, dong_cache):
 
     log.info(f"총 {len(df):,}행 로드 완료 — diffing 시작")
 
+    # 1단계: 파일 안의 중복 행을 (order_key, status) 단위로 병합.
+    # 이 단계를 거치면 한 파일에서 같은 키가 두 번 나오는 일이 없어지므로,
+    # 캐시가 자기 자신과 싸우며 무한 반복되는 문제가 원천 차단된다.
+    merged = merge_duplicate_rows(df, dong_cache)
+
+    # 2단계: 직전 상태와 비교해 실제로 바뀐 것만 추린다.
     cache_dict = load_cache_dict(cache_conn)   # 전체 캐시를 한 번만 메모리로 로드
     cache_updates = []
-    changed_rows_dict = {}  # key: (order_key, status) -> row dict. 같은 파일 안에서 같은 (order_key,status)
-                             # 조합이 여러 번 걸리더라도 나중 값으로 덮어써서, push_to_db의 UPSERT 배치에
-                             # 동일 충돌키가 두 번 들어가는 걸 원천 차단한다 (안 그러면 PostgreSQL이
-                             # "ON CONFLICT DO UPDATE command cannot affect row a second time" 로 거부함).
+    changed_rows_dict = {}
     now_iso = datetime.now(KST).isoformat()
 
-    for _, row in df.iterrows():
-        mgmt_no = str(row[COL_MGMT_NO]).strip()
-        # WMS가 같은 상품의 상품코드를 어떤 날은 '3727', 어떤 날은 '03727'처럼 앞자리 0
-        # 유무를 다르게 내려주는 경우가 있어, 이를 그대로 키에 쓰면 같은 상품이 서로 다른
-        # order_key로 갈라져 상태 추적이 끊기는 버그가 있었음 (2026-08-05, 대시보드 잔여
-        # 과다집계로 발견). 앞자리 0을 제거해 정규화한 값을 키로 사용해 이 둘을 항상
-        # 같은 order_key로 합친다.
-        product_code_raw = str(row[COL_PRODUCT_CODE]).strip()
-        product_code = product_code_raw.lstrip("0") or "0"
-        order_key = f"{mgmt_no}_{product_code}"
+    for (order_key, status), entry in merged.items():
+        prev = cache_dict.get((order_key, status))
+        current = (entry["cs_status"], entry["is_hold"], entry["quantity"])
 
-        status = str(row[COL_STATUS]).strip()
-        cs_status = str(row[COL_CS]).strip() if pd.notna(row[COL_CS]) else "정상"
-        is_hold = str(row[COL_HOLD]).strip() == "보류" if pd.notna(row[COL_HOLD]) else False
-
-        prev_status, prev_cs, prev_hold = cache_dict.get(order_key, (None, None, False))
-
-        # 상태 / CS / 보류여부 중 하나라도 바뀐 경우에만 반영 (완전히 동일하면 스킵 — 중복 방지)
-        # v1에서는 status·cs만 비교해서 보류 해제처럼 같은 상태 안에서 바뀌는 변화를 놓쳤음 → is_hold 추가
-        if status == prev_status and cs_status == prev_cs and is_hold == prev_hold:
+        # CS / 보류 / 수량 중 하나라도 바뀐 경우에만 반영 (동일하면 스킵)
+        if prev == current:
             continue
 
-        # 메모리 캐시도 즉시 갱신 (같은 파일 안에 order_key 중복 행이 있어도 정확히 비교되도록)
-        cache_dict[order_key] = (status, cs_status, is_hold)
-        cache_updates.append((order_key, status, cs_status, int(is_hold), now_iso))
+        cache_updates.append(
+            (order_key, status, entry["cs_status"], int(entry["is_hold"]), entry["quantity"], now_iso)
+        )
 
         # 실시간 현황판이 참고하는 상태는 '송장' / '배송'이 핵심.
-        # 그 외 상태(발주/접수)는 캐시만 갱신하고 DB에는 올리지 않음 (필요해지면 조건 완화 가능)
+        # 그 외 상태(발주/접수)는 캐시만 갱신하고 DB에는 올리지 않는다.
         if status not in ("송장", "배송"):
             continue
 
-        channel_name = str(row[COL_CHANNEL]).strip()
-        dong = dong_cache.get(channel_name)
-
-        extra_data = {}
-        for col in EXTRA_COLS:
-            if col in df.columns:
-                val = row[col]
-                extra_data[col] = None if pd.isna(val) else str(val)
-
-        # 같은 (order_key, status)가 이미 이번 파일에서 잡혔으면 나중 값(=이 행)으로 덮어씀
-        changed_rows_dict[(order_key, status)] = {
-            "order_key": order_key,
-            "invoice_no": str(row[COL_INVOICE]).strip(),
-            "channel_name": channel_name,
-            "dong": dong,
-            "product_name": str(row[COL_PRODUCT_NAME]).strip(),
-            "quantity": int(row[COL_QTY]) if pd.notna(row[COL_QTY]) else 1,
-            "status": status,
-            "cs_status": cs_status,
-            "is_hold": is_hold,
-            "invoice_datetime": parse_kst_datetime(row.get(COL_INVOICE_DATE), row.get(COL_INVOICE_TIME)),
-            "delivery_datetime": parse_kst_datetime(row.get(COL_DELIVERY_DATE), row.get(COL_DELIVERY_TIME)),
-            "detected_at": now_iso,
-            "extra_data": json.dumps(extra_data, ensure_ascii=False),
-        }
+        entry["detected_at"] = now_iso
+        changed_rows_dict[(order_key, status)] = entry
 
     changed_rows = list(changed_rows_dict.values())
 
