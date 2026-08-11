@@ -26,6 +26,30 @@ jobs:
         with:
           fetch-depth: 0
 
+      # 이 저장소는 public이다. 접속정보가 실수로 커밋되면 그 즉시 전 세계에 공개되므로,
+      # 빌드보다 먼저 막는다. 실제 비밀값을 여기 적을 수는 없으니(그것도 유출이다)
+      # "자격증명이 박힌 형태"를 패턴으로 잡는다.
+      - name: 접속정보 유출 검사
+        shell: bash
+        run: |
+          set +e
+          FOUND=0
+          # 중괄호를 제외하는 게 핵심 — f-string의 "postgresql://{DB_USER}:{pw}@{host}" 는
+          # 자격증명이 아니라 변수 조립이라 잡으면 안 된다 (박스추천 main.py에 실제로 있음).
+          # 이 워크플로 자신(패턴 문자열 포함)도 검사 대상에서 뺀다.
+          if git grep -nIE '(postgres(ql)?|mysql|mongodb)(\+[a-z0-9]+)?://[^[:space:]"'"'"'{}]+:[^[:space:]"'"'"'@{}]+@' -- . ':!.github' ; then FOUND=1; fi
+          # PASSWORD = "실제값" 형태
+          if git grep -nIE '(PASSWORD|SECRET|API_KEY|TOKEN)[[:space:]]*=[[:space:]]*["'"'"'][^"'"'"'{}$]{6,}["'"'"']' -- . ':!.github' ; then FOUND=1; fi
+          # os.getenv("DB_PASSWORD", "실제값") 형태 — 박스추천 main.py에 실제로 이 사고가
+          # 있었다. 환경변수 이름이 비밀스러운 것에만 걸어 오탐(폴더 경로 기본값 등)을 피한다.
+          if git grep -nIE 'getenv\([[:space:]]*["'"'"'][A-Z_]*(PASSWORD|SECRET|TOKEN|API_KEY|DATABASE_URL)[A-Z_]*["'"'"'][[:space:]]*,[[:space:]]*["'"'"'][^"'"'"']{4,}["'"'"']' -- . ':!.github' ; then FOUND=1; fi
+          set -e
+          if [ "$FOUND" = "1" ]; then
+            echo "::error::소스에 자격증명으로 보이는 값이 있습니다. 커밋에서 제거하고 .env로 옮긴 뒤 다시 push해주세요."
+            exit 1
+          fi
+          echo "접속정보 유출 없음"
+
       - name: 버전 읽기
         id: ver
         shell: bash
