@@ -57,7 +57,13 @@ def get_db_engine():
     try:
         safe_password = urllib.parse.quote_plus(DB_PASSWORD)
         connection_url = f"postgresql+psycopg2://{DB_USER}:{safe_password}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-        _DB_ENGINE = create_engine(connection_url, client_encoding='utf8', pool_pre_ping=True)
+        # connect_timeout: 이 프로그램은 시작하자마자 GUI 스레드에서 engine.connect()를
+        # 호출한다. 통합 허브에 창으로 내장된 뒤로는 여기서 막히면 허브 전체가 멈추므로,
+        # DB에 닿지 않는 PC에서도 몇 초 안에 실패하고 넘어가도록 제한을 둔다.
+        _DB_ENGINE = create_engine(
+            connection_url, client_encoding='utf8', pool_pre_ping=True,
+            connect_args={"connect_timeout": 5},
+        )
         return _DB_ENGINE
     except Exception as e:
         print(f"DB Engine Error: {e}")

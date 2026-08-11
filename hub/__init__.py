@@ -1,10 +1,9 @@
-"""허브 지원 모듈 — 설정, 테마, 자동 업데이트.
+"""허브 지원 모듈 — 경로, 설정, 테마, 자동 업데이트, 자격증명, 모듈 로더.
 
-업무 프로그램(박스추천/파일찢기 등)은 여기 들어있지 않다. 그것들은 아직
-각자 폴더에서 subprocess로 실행되는 별도 프로그램이고, exe에 내장하려면
-import 가능한 모듈로 바꾸는 리팩터가 선행돼야 한다(2단계 과제).
+업무 프로그램(박스추천/파일찢기 등) 자체는 각자 폴더에 그대로 있고,
+modules.py가 허브 프로세스 안에서 Toplevel 창으로 띄운다.
 """
 
-from . import config, theme, updater  # noqa: F401
+from . import config, modules, paths, secrets, theme, updater  # noqa: F401
 
-__all__ = ["config", "theme", "updater"]
+__all__ = ["config", "modules", "paths", "secrets", "theme", "updater"]

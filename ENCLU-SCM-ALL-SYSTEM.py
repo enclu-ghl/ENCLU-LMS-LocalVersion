@@ -2,39 +2,33 @@
 ENCLU SCM ALL SYSTEM — 허브 진입점
 ──────────────────────────────────────────────────────────────
 포함 프로그램:
-  1. 박스크기추천 통합 시스템   (main.py)             - subprocess 실행
-  2. 상품 매칭 자동화 매크로    (macro_launcher.py)    - subprocess 실행
+  1. 박스크기추천 통합 시스템   (main.py)             - 창으로 내장
+  2. 상품 매칭 자동화 매크로    (macro_launcher.py)    - 창으로 내장
   3. 재고조사 시스템            (웹)                   - 브라우저 실행
   4. 무게구간 계산 시스템       (웹)                   - 브라우저 실행
-  5. UPH 자동 제어판            (uph_control_panel.py) - subprocess 실행
+  5. UPH 자동 제어판            (uph_control_panel.py) - 창으로 내장
   6. UPH 실시간 현황판          (웹)                   - 브라우저 실행
-  7. 파일 찢기 프로그램         (file_splitter_gui.py) - subprocess 실행
+  7. 파일 찢기 프로그램         (file_splitter_gui.py) - 창으로 내장
   8. OMS 송장 출력 제작 프로그램 (준비중 — 로드맵)
   9. 소모품 데이터 작성 및 보관 분석 (준비중 — 로드맵)
 ──────────────────────────────────────────────────────────────
-배포 형태에 따라 쓸 수 있는 프로그램이 다르다:
-  - 개발 PC(.py 실행)  : 로컬 프로그램 폴더가 옆에 있으므로 전부 실행 가능
-  - 팀원 PC(exe 배포)  : 웹 3종만 동작. 로컬 프로그램은 폴더가 없으므로 '미설치'로 표시된다.
-    (로컬 프로그램을 exe에 내장하려면 subprocess 실행 → import 모듈로 바꾸는 리팩터가 필요 — 2단계 과제)
+업무 프로그램은 허브와 같은 프로세스에서 Toplevel 창으로 뜬다 (hub/modules.py).
+따라서 exe 하나만 배포하면 팀원 PC에서도 전부 동작한다.
+
+DB 접속정보는 exe에 넣지 않는다 — 공개 릴리스라 그대로 유출되기 때문이다.
+각 PC에서 최초 1회 입력받아 DPAPI로 암호화 저장한다 (hub/secrets.py).
 """
 
-import os
-import subprocess
-import sys
-import threading
 import tkinter as tk
 import webbrowser
 from tkinter import messagebox
 
 from hub import config as cfg_mod
+from hub import modules as mod_loader
 from hub import paths
 from hub import theme as theme_mod
 from hub import updater
 
-# ══════════════════════════════════════════════════════════════
-#  ★ 경로 설정
-# ══════════════════════════════════════════════════════════════
-BASE_DIR = paths.APP_DIR
 VERSION = paths.read_version()
 
 # 웹 시스템 URL (재고조사 / 무게구간 계산 / UPH 현황판 — 같은 앱, 쿼리파라미터로 바로 진입)
@@ -45,36 +39,9 @@ WEB_URLS = {
     "uph_web":       f"{WEB_BASE_URL}?system=uph",
 }
 
-# 각 프로그램 파일 — BASE_DIR 기준 상대 경로.
-# 예전에는 개발 PC의 절대경로가 박혀 있어서 다른 PC에서는 무조건 실패했다.
-FILE_PATHS = {
-    "boxscm":        os.path.join(BASE_DIR, "박스추천프로그램", "main.py"),
-    "macro":         os.path.join(BASE_DIR, "자동 매칭 프로그램", "macro_launcher.py"),
-    "uph_panel":     os.path.join(BASE_DIR, "UPH 시스템", "uph_control_panel.py"),
-    "file_splitter": os.path.join(BASE_DIR, "주문파일정리 프로그램", "file_splitter_gui.py"),
-}
-
-
-def _resolve_python(key: str) -> str:
-    """해당 프로그램을 실행할 파이썬을 찾는다.
-
-    우선순위: 그 프로그램 폴더의 venv → 허브 폴더의 venv → 시스템 파이썬.
-    예전에는 사용자별 절대경로(C:\\Users\\admin\\...)가 하드코딩돼 있어서
-    그 계정이 아닌 PC에서는 조용히 폴백되곤 했다.
-    """
-    target = FILE_PATHS.get(key, "")
-    candidates = []
-    if target:
-        prog_dir = os.path.dirname(target)
-        for exe in ("pythonw.exe", "python.exe"):
-            candidates.append(os.path.join(prog_dir, "venv", "Scripts", exe))
-    for exe in ("pythonw.exe", "python.exe"):
-        candidates.append(os.path.join(BASE_DIR, "venv", "Scripts", exe))
-
-    for path in candidates:
-        if os.path.exists(path):
-            return path
-    return paths.find_system_python()
+# 업무 프로그램은 더 이상 subprocess로 외부 .py를 실행하지 않는다.
+# hub/modules.py 가 허브 프로세스 안에서 Toplevel 창으로 띄운다 (REGISTRY 참고).
+# exe에는 전부 번들되므로 팀원 PC에서도 그대로 동작한다.
 
 
 # ── 앱 정의 ────────────────────────────────────────────────────
@@ -178,8 +145,6 @@ class HubApp:
         self.root.title("ENCLU SCM ALL SYSTEM")
         self.root.resizable(False, False)
 
-        self._processes: dict = {}   # key -> subprocess.Popen
-
         # config.json 준비 (없으면 초기설정 창) — UI를 그리기 전에 테마를 확정해야 한다
         self.root.withdraw()
         self.cfg = cfg_mod.ensure(self.root, VERSION)
@@ -201,12 +166,7 @@ class HubApp:
             return "coming_soon"
         if info["mode"] == "web":
             return "ok"
-        target = FILE_PATHS.get(info["key"], "")
-        if not target or not os.path.exists(target):
-            return "missing"
-        if not _resolve_python(info["key"]):
-            return "missing"
-        return "ok"
+        return "ok" if mod_loader.is_available(info["key"]) else "missing"
 
     # ── UI 구성 ─────────────────────────────────────────────────
     def _build_ui(self):
@@ -370,13 +330,11 @@ class HubApp:
             return
 
         if avail == "missing":
-            target = FILE_PATHS.get(key, "")
             messagebox.showinfo(
                 "이 PC에서는 사용할 수 없습니다",
                 f"{info['title'].replace(chr(10), ' ')}\n\n"
-                "이 프로그램은 아직 실행 파일에 내장되어 있지 않아, 프로그램 폴더가 있는 PC에서만 동작합니다.\n\n"
-                f"찾은 경로: {target or '(설정 없음)'}\n\n"
-                "웹으로 표시된 프로그램은 이 PC에서도 바로 사용할 수 있습니다.",
+                "프로그램 폴더를 찾지 못했습니다.\n"
+                f"찾은 위치: {mod_loader.source_dir(key) or '(등록 안 됨)'}",
                 parent=self.root,
             )
             return
@@ -384,7 +342,19 @@ class HubApp:
         if info["mode"] == "web":
             self._launch_web(key, info)
         else:
-            self._launch_subprocess(key, info, FILE_PATHS[key])
+            self.set_busy(True)
+            try:
+                mod_loader.launch(self.root, key, self.theme_name)
+            finally:
+                self.set_busy(False)
+
+    def set_busy(self, busy: bool):
+        """무거운 모듈(pandas·matplotlib)을 처음 import할 때 몇 초 걸려서 커서로 알린다."""
+        try:
+            self.root.config(cursor="watch" if busy else "")
+            self.root.update_idletasks()
+        except tk.TclError:
+            pass
 
     def _launch_web(self, key: str, info: dict):
         url = WEB_URLS.get(key, "")
@@ -398,60 +368,56 @@ class HubApp:
         except Exception as e:
             messagebox.showerror("실행 오류", f"브라우저 실행 실패:\n{e}", parent=self.root)
 
-    def _launch_subprocess(self, key: str, info: dict, target_file: str):
-        if key in self._processes:
-            proc = self._processes[key]
-            if proc.poll() is None:
-                messagebox.showinfo(
-                    "이미 실행 중",
-                    f"{info['title'].replace(chr(10), ' ')} 이(가) 이미 실행 중입니다.",
-                    parent=self.root,
-                )
-                return
-            del self._processes[key]
-
-        use_python = _resolve_python(key)
-        file_dir = os.path.dirname(os.path.abspath(target_file))
-        creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-
-        try:
-            proc = subprocess.Popen(
-                [use_python, target_file],
-                cwd=file_dir,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=creationflags,
-            )
-            self._processes[key] = proc
-
-            def _watch():
-                proc.wait()
-                self._processes.pop(key, None)
-
-            threading.Thread(target=_watch, daemon=True).start()
-        except Exception as e:
-            messagebox.showerror("실행 오류", f"프로그램 실행 실패:\n{e}", parent=self.root)
-
     # ── 허브 종료 ───────────────────────────────────────────────
     def _on_root_close(self):
-        active = {k: p for k, p in self._processes.items() if p.poll() is None}
-        if active:
-            names = "\n".join(
-                f"  - {next((a['title'].replace(chr(10), ' ') for a in APPS if a['key'] == k), k)}"
-                for k in active
-            )
+        """업무 프로그램이 허브와 같은 프로세스에서 도므로, 허브를 닫으면 전부 닫힌다.
+
+        예전에는 별도 프로세스라 '허브를 닫아도 계속 실행됩니다'라고 안내했는데,
+        이제는 사실이 아니다. 열려 있는 창이 있으면 정확히 알리고 확인을 받는다.
+        """
+        open_names = []
+        for key, win in list(mod_loader._open_windows.items()):
+            try:
+                if win.winfo_exists():
+                    open_names.append(
+                        next((a["title"].replace(chr(10), " ") for a in APPS if a["key"] == key), key)
+                    )
+            except tk.TclError:
+                continue
+
+        if open_names:
+            names = "\n".join(f"  - {n}" for n in open_names)
             if not messagebox.askyesno(
                 "종료 확인",
-                f"아래 프로그램이 실행 중입니다:\n{names}\n\n"
-                "허브를 종료해도 각 프로그램은 계속 실행됩니다.\n종료하시겠습니까?",
+                f"아래 프로그램이 열려 있습니다:\n{names}\n\n"
+                "허브를 닫으면 이 창들도 함께 닫힙니다.\n"
+                "저장하지 않은 작업이 있으면 먼저 저장해주세요.\n\n종료하시겠습니까?",
                 parent=self.root,
             ):
                 return
         self.root.destroy()
 
 
+def _make_root() -> tk.Tk:
+    """가능하면 TkinterDnD.Tk()로 루트를 만든다.
+
+    박스추천 프로그램은 드래그앤드롭(tkinterdnd2)을 쓰는데, tkdnd Tcl 패키지는
+    **루트를 만드는 시점에만** 인터프리터에 로드된다. 평범한 tk.Tk()로 만들면
+    그 위의 Toplevel에서 drop_target_register가
+    TclError: invalid command name "tkdnd::drop_target" 으로 죽는다.
+
+    tkinterdnd2가 없으면 일반 루트로 떨어뜨린다 — 박스추천만 드롭이 안 될 뿐
+    나머지 프로그램은 정상 동작한다.
+    """
+    try:
+        from tkinterdnd2 import TkinterDnD
+        return TkinterDnD.Tk()
+    except Exception:
+        return tk.Tk()
+
+
 def main():
-    root = tk.Tk()
+    root = _make_root()
     HubApp(root)
     root.mainloop()
 
