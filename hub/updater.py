@@ -105,30 +105,69 @@ def download(url: str, dest: str, progress=None) -> bool:
         return False
 
 
+#: 교체 실패 시 남기는 로그 (사용자에게는 안 보이므로 관리자가 확인용으로 본다)
+SWAP_LOG = "enclu_update_error.log"
+
+
 def _swap_script(new_exe: str, current_exe: str) -> str:
-    """허브 종료를 기다렸다가 exe를 교체하고 재실행하는 배치파일을 만든다."""
+    """허브 종료를 기다렸다가 exe를 교체하고 재실행하는 배치파일을 만든다.
+
+    ⚠️ 두 가지가 핵심이다. 둘 다 실제로 업데이트가 조용히 실패해서 잡은 것이다:
+
+    1) **move를 한 번만 시도하면 안 된다.** PyInstaller onefile은 부모(부트로더)와
+       자식 두 프로세스로 뜬다. 여기서 기다리는 PID는 자식 것인데, 자식이 죽은 직후에도
+       부모가 잠깐 살아 있으면서 exe 파일을 잡고 있어 move가 '액세스 거부'로 실패한다
+       (실측: 0초 뒤 실패 / 2초 뒤 성공). 그래서 성공할 때까지 재시도한다.
+
+    2) **pause를 쓰면 안 된다.** 이 배치는 창 없이(CREATE_NO_WINDOW) 돌기 때문에
+       pause에 걸리면 사용자 눈에는 "업데이트를 눌렀는데 아무 일도 안 일어남"으로만
+       보이고 영원히 멈춘다. 실패는 로그로 남기고 기존 exe를 다시 띄운다.
+
+    배치 본문은 ASCII만 쓴다 — 코드페이지에 따라 한글이 깨져 파싱이 어긋나는 걸 피한다.
+    """
     pid = os.getpid()
     script = os.path.join(tempfile.gettempdir(), f"enclu_scm_update_{pid}.bat")
+    log_path = os.path.join(os.path.dirname(current_exe), SWAP_LOG)
     body = f"""@echo off
-chcp 65001 >nul
-rem ENCLU SCM 자동 업데이트 도우미 — 교체 후 스스로 삭제됩니다.
+rem ENCLU SCM auto-update helper. Deletes itself when done.
+setlocal enableextensions
+
+rem --- 1) wait for the hub process to exit (max ~60s) ---
+set /a _w=0
 :waitloop
-tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul
-if not errorlevel 1 (
-    ping -n 2 127.0.0.1 >nul
-    goto waitloop
-)
-move /y "{new_exe}" "{current_exe}" >nul
-if errorlevel 1 (
-    echo 업데이트 실패: 파일을 교체하지 못했습니다.
-    echo 새 파일 위치: {new_exe}
-    pause
-    exit /b 1
-)
+tasklist /FI "PID eq {pid}" /NH 2>nul | find "{pid}" >nul
+if errorlevel 1 goto ready
+set /a _w+=1
+if %_w% GEQ 60 goto ready
+ping -n 2 127.0.0.1 >nul
+goto waitloop
+
+:ready
+rem --- 2) retry the swap; the bootloader parent may still hold the file ---
+set /a _t=0
+:retry
+move /y "{new_exe}" "{current_exe}" >nul 2>&1
+if not errorlevel 1 goto ok
+set /a _t+=1
+if %_t% GEQ 30 goto failed
+ping -n 2 127.0.0.1 >nul
+goto retry
+
+:ok
 start "" "{current_exe}"
 del "%~f0"
+exit /b 0
+
+:failed
+echo [ENCLU SCM] update failed - could not replace the exe. > "{log_path}"
+echo downloaded: {new_exe} >> "{log_path}"
+echo target    : {current_exe} >> "{log_path}"
+echo Close the program completely and copy the downloaded file over the target manually. >> "{log_path}"
+start "" "{current_exe}"
+del "%~f0"
+exit /b 1
 """
-    with open(script, "w", encoding="utf-8") as f:
+    with open(script, "w", encoding="ascii", errors="replace") as f:
         f.write(body)
     return script
 
