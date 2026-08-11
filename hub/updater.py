@@ -244,8 +244,19 @@ def _finish(root, ok: bool, dest: str, on_result=None):
         return
 
     if apply_and_restart(dest):
-        root.destroy()
-        sys.exit(0)
+        # os._exit로 즉시 끝낸다 — 파이썬의 정상 종료 절차(atexit·GC·지연 import)를
+        # 통째로 건너뛴다.
+        #
+        # sys.exit로 곱게 내려가면 종료 도중 아직 안 불러온 DLL을 번들 폴더에서
+        # 마저 로드하려 하는데, 그 시점엔 부트로더가 이미 _MEIxxxxx 임시 폴더를
+        # 정리하기 시작한 뒤라
+        #   "Failed to load Python DLL ...\_MEIxxxxx\python312.dll" 오류창이 뜬다.
+        # 업데이트 자체는 성공하지만 사용자는 실패한 줄 안다 (실사용 신고).
+        try:
+            root.destroy()
+        except Exception:
+            pass
+        os._exit(0)
 
     messagebox.showerror(
         "업데이트 실패",
