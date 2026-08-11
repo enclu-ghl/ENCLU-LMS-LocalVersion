@@ -30,6 +30,14 @@ CHROME_CMD = [
 _VENV_PYTHON = os.path.join(BASE_DIR, "venv", "Scripts", "python.exe")
 PYTHON_EXE   = _VENV_PYTHON if os.path.exists(_VENV_PYTHON) else sys.executable
 
+# 통합 허브 exe 안에서는 matching_macro.py도 파이썬도 팀원 PC에 없다.
+# hub.child가 "허브 exe를 --run matching_macro 로 재실행"하는 명령줄을 대신 만들어준다.
+# 허브 없이 단독 실행하면 None이라 기존 동작 그대로다.
+try:
+    from hub import child as _hub_child
+except ImportError:
+    _hub_child = None
+
 # ── 색상 팔레트 ─────────────────────────────────────────────────
 BG_MAIN    = "#1E2330"   # 전체 배경 (다크 네이비)
 BG_PANEL   = "#252B3B"   # 패널 배경
@@ -294,8 +302,10 @@ class MacroLauncherApp:
         try:
             # CREATE_NO_WINDOW: 콘솔(검은 창) 없이 실행
             CREATE_NO_WINDOW = 0x08000000
+            cmd = (_hub_child.command("matching_macro", MACRO_FILE, PYTHON_EXE)
+                   if _hub_child else [PYTHON_EXE, "-u", MACRO_FILE])
             self._macro_proc = subprocess.Popen(
-                [PYTHON_EXE, "-u", MACRO_FILE],
+                cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,

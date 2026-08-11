@@ -83,7 +83,11 @@ SWAL_CONFIRM_TEXT = "확인했습니다"
 # 이 파일이 없으면 '최초 실행'으로 판단해 상태=송장만 다운로드하여 기준선을 잡고,
 # 성공하면 이 파일을 만들어 다음 실행부터는 자동으로 송장+배송을 받도록 함.
 # (사람이 매번 --baseline 옵션을 기억해서 붙일 필요 없게 자동 판단)
-BASELINE_FLAG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "baseline_done.flag")
+# 허브 exe 안에서는 __file__이 임시 폴더라 플래그가 매번 사라진다
+# (= 매 실행이 최초 실행으로 취급됨). 허브가 지정해준 경로를 우선 쓴다.
+BASELINE_FLAG_FILE = os.getenv("UPH_BASELINE_FLAG") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "baseline_done.flag"
+)
 
 # ── 확장주문검색2 페이지 셀렉터 ──
 MENU_LINK_TEXT          = "확장주문검색2"
@@ -139,7 +143,9 @@ ROW_SEARCH_MAX_ATTEMPTS  = 24   # POLL_INTERVAL_SEC=5초 기준 2분
 # ─────────────────────────────────────────
 #  헬퍼 함수
 # ─────────────────────────────────────────
-LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uph_download_macro.log")
+LOG_FILE = os.getenv("UPH_MACRO_LOG_FILE") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "uph_download_macro.log"
+)
 
 def log(msg):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

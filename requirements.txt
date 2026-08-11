@@ -1,21 +1,28 @@
-# ENCLU SCM ALL SYSTEM — 허브 진입점 의존성
+# ENCLU SCM ALL SYSTEM — exe 빌드에 필요한 전체 의존성
 #
-# 허브 자체(ENCLU-SCM-ALL-SYSTEM.py + hub/)는 표준 라이브러리만 쓴다.
-# tkinter는 Windows 공식 파이썬에 기본 포함이라 여기 적지 않는다.
-# 따라서 런타임 의존성은 없고, 아래는 exe 빌드에만 필요하다.
+# 허브 자체(hub/)는 표준 라이브러리만 쓴다. 아래는 exe에 함께 내장되는
+# 업무 프로그램들이 쓰는 것들이라, 하나라도 빠지면 그 프로그램만 조용히
+# '실행할 수 없습니다'로 뜬다. CI(build.yml)가 이 파일을 그대로 설치한다.
 
 pyinstaller>=6.0
 
-# ──────────────────────────────────────────────────────────────
-# 2단계(업무 프로그램 exe 내장)에서 추가될 것들 — 지금은 각 프로그램 폴더에서
-# 자체 venv로 설치해 쓰고 있어 여기 넣지 않는다. 미리 넣으면 exe만 수백 MB로 불어난다.
-#
-# pandas
-# openpyxl
-# xlsxwriter
-# sqlalchemy
-# psycopg2-binary
-# python-dotenv
-# tkinterdnd2
-# selenium
-# ──────────────────────────────────────────────────────────────
+# 공통 — 엑셀 입출력 / DB
+pandas
+openpyxl
+xlsxwriter
+xlrd                    # WMS가 내려주는 구형 .xls 읽기
+sqlalchemy
+psycopg2-binary
+python-dotenv
+
+# 파일찢기 (주문파일정리)
+beautifulsoup4
+pykakasi                # 아마존 요미가나 변환
+
+# 박스추천
+tkinterdnd2             # 드래그앤드롭 (허브 루트도 이걸로 만든다)
+matplotlib              # 3D 시뮬레이션
+PyMuPDF                 # fitz — PDF 파싱
+
+# 자동매칭
+selenium

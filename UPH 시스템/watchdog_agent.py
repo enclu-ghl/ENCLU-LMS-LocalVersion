@@ -59,7 +59,12 @@ KEEP_LATEST_FILES = int(os.getenv("UPH_KEEP_LATEST_FILES", "5"))  # 감시폴더
 
 KST = timezone(timedelta(hours=9))
 
-LOG_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uph_agent.log")
+# 통합 허브 exe 안에서 돌 때는 __file__이 실행할 때마다 지워지는 임시 폴더라
+# 로그가 남지 않는다. UPH 제어판이 이 로그를 읽어 상태를 보여주므로 화면이 비어버린다.
+# 그래서 허브가 UPH_LOG_FILE로 쓰기 가능한 경로를 지정해주면 그쪽을 쓴다.
+LOG_FILE_PATH = os.getenv("UPH_LOG_FILE") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "uph_agent.log"
+)
 
 logging.basicConfig(
     level=logging.INFO,

@@ -14,27 +14,46 @@ if os.path.isdir("assets") and os.listdir("assets"):
 icon_path = os.path.join("assets", "icon.ico")
 icon = icon_path if os.path.exists(icon_path) else None
 
+# 업무 프로그램 소스 폴더 — 폴더명에 공백·한글이 있어 패키지로 import할 수 없으므로
+# 경로를 직접 넣고 모듈명만 hiddenimports로 지정한다.
+PROGRAM_DIRS = [
+    "주문파일정리 프로그램",
+    "박스추천프로그램",
+    "자동 매칭 프로그램",
+    "UPH 시스템",
+]
+
 a = Analysis(
     ["ENCLU-SCM-ALL-SYSTEM.py"],
-    pathex=[],
+    pathex=[d for d in PROGRAM_DIRS if os.path.isdir(d)],
     binaries=[],
     datas=datas,
     hiddenimports=[
-        "hub",
-        "hub.config",
-        "hub.paths",
-        "hub.theme",
-        "hub.updater",
+        # 허브 지원 모듈
+        "hub", "hub.child", "hub.config", "hub.modules",
+        "hub.paths", "hub.secrets", "hub.theme", "hub.updater",
+        # 업무 프로그램 — modules.py가 지연 import하므로 정적 분석에 안 잡힌다.
+        # 여기 적지 않으면 exe에 아예 안 들어가고 '실행할 수 없습니다'가 뜬다.
+        "file_splitter_gui",
+        "main",                 # 박스추천
+        "macro_launcher",
+        "matching_macro",       # macro_launcher가 --run으로 재실행
+        "uph_control_panel",
+        "watchdog_agent",       # UPH 제어판이 --run으로 재실행
+        "uph_download_macro",   # 〃
+        # 동적으로만 참조되어 누락되기 쉬운 것들
+        "psycopg2", "sqlalchemy.dialects.postgresql",
+        "openpyxl", "xlsxwriter", "xlrd",
+        "tkinterdnd2",
+        "matplotlib.backends.backend_tkagg",
+        "pykakasi", "bs4",
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    # 업무 프로그램용 무거운 라이브러리가 개발 PC에 깔려 있어도 exe에 끌려들어가지 않게 막는다.
-    excludes=[
-        "pandas", "numpy", "matplotlib", "scipy",
-        "selenium", "sqlalchemy", "psycopg2", "openpyxl", "xlsxwriter",
-        "PIL", "pytest",
-    ],
+    # 업무 프로그램이 실제로 쓰는 라이브러리(pandas·matplotlib·selenium 등)는
+    # 제외하면 안 된다 — 예전엔 허브만 빌드해서 전부 excludes에 넣어뒀었다.
+    excludes=["pytest", "IPython", "notebook", "tkinter.test"],
     noarchive=False,
 )
 

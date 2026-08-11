@@ -17,6 +17,17 @@ from tkinter import ttk, scrolledtext, messagebox
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# 통합 허브 exe 안에서 돌 때는 자식 스크립트(.py)도 파이썬도 팀원 PC에 없다.
+# hub.child가 "허브 exe를 --run 인자로 재실행"하는 명령줄과, 로그·캐시를 남길
+# 쓰기 가능한 폴더를 대신 정해준다. 허브 없이 단독 실행하면 None이 되어
+# 기존 동작(옆 폴더의 .py를 파이썬으로 실행)을 그대로 유지한다.
+try:
+    from hub import child as _hub_child
+except ImportError:
+    _hub_child = None
+
+_DATA_DIR = _hub_child.data_dir() if _hub_child else ""
+
 # ── 디버그 크롬(이지어드민 로그인 유지용) 실행 설정 ──
 CHROME_PATHS = [
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -121,7 +132,9 @@ class ProcessPanel:
     def __init__(self, parent, title, script_name, log_file):
         self.script_name = script_name
         self.script_path = os.path.join(BASE_DIR, script_name)
-        self.log_path = os.path.join(BASE_DIR, log_file)
+        # 허브 exe 안에서는 자식이 _DATA_DIR에 로그를 남기므로 거기서 읽어야 한다.
+        # (BASE_DIR은 번들 임시 폴더라 로그가 없다)
+        self.log_path = os.path.join(_DATA_DIR or BASE_DIR, log_file)
         self.proc = None
         self.start_time = None
         self.stop_time = None
@@ -184,26 +197,38 @@ class ProcessPanel:
                 self._append_log(f"[INFO] 시작 취소됨 — 외부 프로세스(PID {pid_list})가 이미 실행 중")
                 return
 
-        if not os.path.exists(self.script_path):
-            self._append_log(f"[ERROR] 스크립트를 찾을 수 없습니다: {self.script_path}")
-            return
-        if not os.path.exists(PYTHON_EXE):
-            self._append_log(f"[ERROR] python.exe를 찾을 수 없습니다: {PYTHON_EXE}")
-            return
+        # 허브 exe 안에서는 자기 자신을 --run 인자로 재실행한다 (자식 .py가 번들 안에만 있음).
+        # 단독 실행이면 예전처럼 옆 폴더의 .py를 파이썬으로 돌린다.
+        child_name = os.path.splitext(self.script_name)[0]
+        if _hub_child:
+            cmd = _hub_child.command(child_name, self.script_path, PYTHON_EXE)
+            child_env = _hub_child.prepare_env()
+        else:
+            cmd = [PYTHON_EXE, "-u", self.script_path]
+            child_env = None
+
+        if not _DATA_DIR:   # 단독 실행일 때만 원본 파일 존재를 확인한다
+            if not os.path.exists(self.script_path):
+                self._append_log(f"[ERROR] 스크립트를 찾을 수 없습니다: {self.script_path}")
+                return
+            if not os.path.exists(PYTHON_EXE):
+                self._append_log(f"[ERROR] python.exe를 찾을 수 없습니다: {PYTHON_EXE}")
+                return
 
         try:
             popen_kwargs = dict(
-                cwd=BASE_DIR,
+                cwd=_DATA_DIR or BASE_DIR,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,
+                env=child_env,
             )
             if os.name == "nt":
                 # 콘솔창 자체를 아예 안 만듦 (python.exe는 콘솔 서브시스템이라 기본적으로 창이 뜨는데,
                 # 이 플래그로 억제. pythonw.exe와 달리 이 PC에서도 확실히 동작함)
                 popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
             self.proc = subprocess.Popen(
-                [PYTHON_EXE, "-u", self.script_path],
+                cmd,
                 **popen_kwargs,
             )
         except Exception as e:

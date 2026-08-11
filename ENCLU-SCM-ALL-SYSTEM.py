@@ -417,6 +417,13 @@ def _make_root() -> tk.Tk:
 
 
 def main():
+    # exe가 `--run <이름>`으로 실행됐으면 GUI 없이 그 자식 스크립트만 돌리고 끝낸다.
+    # (자동매칭·UPH 제어판이 내부 작업을 띄울 때 이 경로로 자기 자신을 재실행한다)
+    # 반드시 Tk 루트를 만들기 전에 처리해야 한다.
+    from hub import child
+    if child.dispatch():
+        return
+
     root = _make_root()
     HubApp(root)
     root.mainloop()
