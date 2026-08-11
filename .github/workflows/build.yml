@@ -55,11 +55,18 @@ jobs:
         with:
           python-version: "3.12"
 
+      # Windows 러너에서는 pip이 자기 자신을 교체하지 못해 실패한다
+      # ([WinError 5] Access is denied: pip.exe). 반드시 python -m pip 으로 호출할 것.
       - name: 빌드 도구 설치
-        run: pip install --upgrade pip pyinstaller
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller
+          python -m PyInstaller --version
 
       - name: exe 빌드
-        run: pyinstaller --noconfirm --clean ENCLU_SCM.spec
+        shell: bash
+        run: python -m PyInstaller --noconfirm --clean ENCLU_SCM.spec
 
       - name: 산출물 확인
         shell: bash
