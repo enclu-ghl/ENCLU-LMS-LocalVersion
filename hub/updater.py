@@ -128,6 +128,9 @@ def _swap_script(new_exe: str, current_exe: str) -> str:
     pid = os.getpid()
     script = os.path.join(tempfile.gettempdir(), f"enclu_scm_update_{pid}.bat")
     log_path = os.path.join(os.path.dirname(current_exe), SWAP_LOG)
+    # 실행 파일 이름은 경로에서 뽑는다 — 이름을 바꿔서 쓰는 PC가 있어도
+    # 아래 '남은 프로세스 대기' 루프가 헛돌지 않도록.
+    exe_name = os.path.basename(current_exe)
     body = f"""@echo off
 rem ENCLU SCM auto-update helper. Deletes itself when done.
 setlocal enableextensions
@@ -154,6 +157,24 @@ ping -n 2 127.0.0.1 >nul
 goto retry
 
 :ok
+rem --- 3) wait until every old process is really gone, then pause a moment ---
+rem PyInstaller onefile unpacks itself into %TEMP%\_MEIxxxxx and the bootloader
+rem deletes that folder as it exits. If the new copy is launched while the old
+rem one is still cleaning up, the new bootloader can fail with
+rem   "Failed to load Python DLL ...\_MEIxxxxx\python312.dll"
+rem even though the swap itself succeeded. Waiting here costs a few seconds and
+rem removes the race entirely.
+set /a _g=0
+:gone
+tasklist /FI "IMAGENAME eq {exe_name}" /NH 2>nul | find /I "{exe_name}" >nul
+if errorlevel 1 goto launch
+set /a _g+=1
+if %_g% GEQ 20 goto launch
+ping -n 2 127.0.0.1 >nul
+goto gone
+
+:launch
+ping -n 4 127.0.0.1 >nul
 start "" "{current_exe}"
 del "%~f0"
 exit /b 0
