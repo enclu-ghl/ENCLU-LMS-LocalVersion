@@ -69,25 +69,43 @@ if not os.path.exists(PYTHON_EXE):
     PYTHON_EXE = sys.executable  # 위 경로가 없으면 지금 이 창을 띄운 파이썬 그대로 사용
 
 
+# ⚠️ 콘솔 없는 실행 파일(통합 exe) 안에서 wmic·powershell·taskkill을 그냥 부르면
+#    호출할 때마다 검은 cmd 창이 번쩍인다. 이 함수는 5초마다 패널 두 개에서 각각
+#    호출되므로 화면이 계속 깜빡거린다 (실사용 신고). 반드시 이 플래그를 붙일 것.
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+
+
 def find_external_processes(script_name):
     """이 제어판이 아닌 다른 곳(터미널로 직접 실행, 예전에 켜둔 다른 제어판 창 등)에서
     이미 같은 스크립트가 실행 중인지 확인. Windows 전용 (wmic 우선, 안 되면 PowerShell로 대체).
     반환: [(pid, commandline), ...] — 발견 못 하거나 Windows가 아니면 빈 리스트.
+
+    통합 exe에서는 자식이 python.exe가 아니라 `ENCLU_SCM.exe --run watchdog_agent`
+    형태로 뜨므로, 프로세스 이름을 python으로 한정하면 아예 못 찾는다.
+    확장자를 뗀 이름(watchdog_agent)으로 명령줄을 훑는다.
     """
     if os.name != "nt":
         return []
 
+    stem = os.path.splitext(script_name)[0]
+    # 조회 대상 프로세스 이름: 단독 실행이면 python 계열, 통합 exe면 그 exe 이름.
+    # 이름을 안 걸고 전체를 훑으면 5초마다 도는 조회라 눈에 띄게 느려진다.
+    names = ["python.exe", "pythonw.exe"]
+    self_exe = os.path.basename(sys.executable)
+    if self_exe.lower() not in names:
+        names.append(self_exe)
+    where = " or ".join(f"name='{n}'" for n in names)
+
     results = []
     try:
         out = subprocess.check_output(
-            ["wmic", "process", "where",
-             "name='python.exe' or name='pythonw.exe'",
-             "get", "ProcessId,CommandLine"],
-            stderr=subprocess.DEVNULL, text=True, timeout=8
+            ["wmic", "process", "where", where, "get", "ProcessId,CommandLine"],
+            stderr=subprocess.DEVNULL, text=True, timeout=8,
+            creationflags=_NO_WINDOW,
         )
         for line in out.splitlines():
             line = line.strip()
-            if not line or script_name not in line:
+            if not line or stem not in line:
                 continue
             parts = line.rsplit(None, 1)
             if len(parts) == 2 and parts[1].isdigit():
@@ -95,18 +113,20 @@ def find_external_processes(script_name):
     except Exception:
         # wmic이 없거나(최신 Windows 일부) 실패하면 PowerShell로 재시도
         try:
+            name_filter = " -or ".join(f"$_.Name -eq '{n}'" for n in names)
             ps_cmd = (
                 "Get-CimInstance Win32_Process | "
-                "Where-Object { $_.Name -match 'python' } | "
+                f"Where-Object {{ {name_filter} }} | "
                 "ForEach-Object { \"$($_.ProcessId)|$($_.CommandLine)\" }"
             )
             out = subprocess.check_output(
                 ["powershell", "-NoProfile", "-Command", ps_cmd],
-                stderr=subprocess.DEVNULL, text=True, timeout=8
+                stderr=subprocess.DEVNULL, text=True, timeout=8,
+                creationflags=_NO_WINDOW,
             )
             for line in out.splitlines():
                 line = line.strip()
-                if not line or "|" not in line or script_name not in line:
+                if not line or "|" not in line or stem not in line:
                     continue
                 pid_str, cmdline = line.split("|", 1)
                 if pid_str.isdigit():
@@ -120,7 +140,8 @@ def find_external_processes(script_name):
 def kill_pid(pid):
     try:
         subprocess.run(["taskkill", "/PID", str(pid), "/F"], check=True,
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        creationflags=_NO_WINDOW)
         return True
     except Exception:
         return False
