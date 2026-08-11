@@ -19,7 +19,15 @@ from datetime import datetime
 # ── 경로 설정 ──────────────────────────────────────────────────
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 MACRO_FILE = os.path.join(BASE_DIR, "matching_macro.py")
-CHROME_EXE = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+# Chrome 설치 위치는 PC마다 다르다. 한 곳만 보면 다른 위치에 설치된 PC에서
+# "Chrome 없음"이 떠서 매크로를 아예 못 쓴다 (UPH 제어판은 원래 세 곳을 봤는데
+# 이쪽만 한 곳이라 같은 PC에서 동작이 엇갈렸다).
+CHROME_PATHS = [
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+]
+CHROME_EXE = next((p for p in CHROME_PATHS if p and os.path.exists(p)), CHROME_PATHS[0])
 CHROME_CMD = [
     CHROME_EXE,
     "--remote-debugging-port=9222",
@@ -262,7 +270,8 @@ class MacroLauncherApp:
         if not os.path.exists(CHROME_EXE):
             messagebox.showerror(
                 "Chrome 없음",
-                f"Chrome을 찾을 수 없습니다.\n경로를 확인해주세요:\n{CHROME_EXE}"
+                "Chrome을 찾을 수 없습니다.\n아래 위치를 모두 확인했습니다:\n\n"
+                + "\n".join(f"  · {p}" for p in CHROME_PATHS)
             )
             return
 

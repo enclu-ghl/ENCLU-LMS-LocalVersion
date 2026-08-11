@@ -404,13 +404,25 @@ class HubApp:
 
         if open_names:
             names = "\n".join(f"  - {n}" for n in open_names)
-            if not messagebox.askyesno(
+            # 예전에는 업무 프로그램이 별도 프로세스라 허브를 닫아도 살아있었다.
+            # 지금은 같은 프로세스의 창이라 루트를 닫으면 전부 같이 죽는다.
+            # 그래서 "허브만 치우고 계속 쓰기"를 선택할 수 있게 3지선다로 묻는다.
+            #   예   → 전부 종료
+            #   아니오 → 허브만 최소화 (프로그램 계속 사용)
+            #   취소  → 아무것도 안 함
+            answer = messagebox.askyesnocancel(
                 "종료 확인",
                 f"아래 프로그램이 열려 있습니다:\n{names}\n\n"
-                "허브를 닫으면 이 창들도 함께 닫힙니다.\n"
-                "저장하지 않은 작업이 있으면 먼저 저장해주세요.\n\n종료하시겠습니까?",
+                "[예]     열려 있는 프로그램까지 전부 종료합니다.\n"
+                "[아니오] 허브 창만 최소화하고 프로그램은 계속 사용합니다.\n"
+                "[취소]   아무것도 하지 않습니다.\n\n"
+                "저장하지 않은 작업이 있으면 먼저 저장해주세요.",
                 parent=self.root,
-            ):
+            )
+            if answer is None:          # 취소
+                return
+            if answer is False:         # 허브만 최소화
+                self.root.iconify()
                 return
         self.root.destroy()
 

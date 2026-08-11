@@ -50,6 +50,39 @@ def is_available(key: str) -> bool:
     return os.path.isdir(source_dir(key))
 
 
+def load_dev_env(key: str) -> int:
+    """개발 PC에서 그 프로그램 폴더의 .env를 환경변수로 올린다. 올린 개수를 돌려준다.
+
+    각 프로그램은 자기 모듈 안에서 load_dotenv()를 부르는데, 그건 **import 시점**이다.
+    허브는 import보다 먼저 접속정보가 있는지 확인하므로, 그대로 두면 .env가 멀쩡히
+    있는 개발 PC에서도 "접속정보를 입력하세요" 창이 뜬다 (실제로 그랬음).
+
+    이미 값이 있으면 덮어쓰지 않는다 — 사용자가 입력해둔 값이나 시스템 환경변수가
+    우선이다. exe 배포본에는 .env가 없으므로 아무 일도 하지 않는다.
+    (python-dotenv에 의존하지 않으려고 KEY=VALUE만 직접 읽는다. hub 패키지는
+     표준 라이브러리만 쓰는 편이 배포·빌드에 유리하다.)
+    """
+    if paths.IS_FROZEN:
+        return 0
+    path = os.path.join(source_dir(key), ".env")
+    loaded = 0
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                name, value = line.split("=", 1)
+                name = name.strip()
+                value = value.strip().strip('"').strip("'")
+                if name and value and not os.environ.get(name):
+                    os.environ[name] = value
+                    loaded += 1
+    except OSError:
+        pass
+    return loaded
+
+
 def _import(key: str):
     """프로그램 모듈을 import한다. 개발 PC에서는 그 폴더를 sys.path에 먼저 넣는다."""
     module_name = REGISTRY[key][0]
@@ -79,6 +112,9 @@ def launch(parent, key: str, theme_name: str = "light"):
         except tk.TclError:
             pass
         _open_windows.pop(key, None)
+
+    # 개발 PC의 .env를 먼저 올린다 — 이걸 건너뛰면 .env가 있는데도 입력창이 뜬다
+    load_dev_env(key)
 
     # DB 접속정보가 필요한 프로그램이면 먼저 확보
     if key in secrets.REQUIRED_BY:

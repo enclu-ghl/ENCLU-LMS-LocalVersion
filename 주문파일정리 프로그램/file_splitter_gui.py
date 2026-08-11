@@ -44,7 +44,25 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine, text, bindparam
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SETTINGS_FILE = os.path.join(BASE_DIR, "settings.json")  # "기본 저장 폴더"만 PC별 로컬로 유지
+
+
+def _settings_dir() -> str:
+    """settings.json을 둘 폴더.
+
+    통합 exe 안에서는 __file__이 실행할 때마다 지워지는 번들 임시 폴더라,
+    거기에 저장하면 프로그램을 껐다 켤 때마다 "기본 저장 폴더" 설정이 사라진다.
+    그래서 exe로 돌 때는 프로그램 폴더(exe 옆)에 남긴다.
+    """
+    try:
+        from hub import paths
+        if paths.IS_FROZEN:
+            return paths.APP_DIR
+    except ImportError:
+        pass
+    return BASE_DIR
+
+
+SETTINGS_FILE = os.path.join(_settings_dir(), "settings.json")  # "기본 저장 폴더"만 PC별 로컬로 유지
 
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
