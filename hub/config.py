@@ -117,7 +117,13 @@ class SetupDialog(tk.Toplevel):
 
         self.title("ENCLU SCM — 초기 설정")
         self.resizable(False, False)
-        self.transient(parent)
+        # ⚠️ 부모가 withdraw 상태면 transient를 걸면 안 된다.
+        #    Tk는 transient의 master가 숨겨져 있으면 자식 창도 같이 숨긴다 —
+        #    허브는 최초 실행 시 root를 숨긴 채 이 창을 띄우므로, 그대로 두면
+        #    화면에 아무것도 안 뜬 채 wait_window()에서 영원히 멈춘다.
+        #    (팀원 PC 첫 실행이 정확히 이 경로라 반드시 유지할 것)
+        if parent.winfo_viewable():
+            self.transient(parent)
         self.protocol("WM_DELETE_WINDOW", self._on_cancel)
 
         self.theme_var = tk.StringVar(value=self._cfg.get("theme", "light"))
@@ -129,7 +135,20 @@ class SetupDialog(tk.Toplevel):
 
         self.update_idletasks()
         self._center_on(parent)
-        self.grab_set()
+
+        # 확실히 화면에 올린 뒤 모달로 잠근다. grab_set은 창이 보이기 전에 부르면
+        # TclError("grab failed: window not viewable")가 날 수 있어 순서가 중요하다.
+        self.deiconify()
+        self.lift()
+        try:
+            self.focus_force()
+        except tk.TclError:
+            pass
+        try:
+            self.wait_visibility()
+            self.grab_set()
+        except tk.TclError:
+            pass  # 모달 잠금에 실패해도 창 자체는 쓸 수 있어야 한다
 
     def _build(self):
         pal = theme_mod.get(self.theme_var.get())
