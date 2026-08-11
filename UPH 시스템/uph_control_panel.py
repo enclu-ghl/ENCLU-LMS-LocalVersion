@@ -139,7 +139,9 @@ def find_external_processes(script_name):
 
 def kill_pid(pid):
     try:
-        subprocess.run(["taskkill", "/PID", str(pid), "/F"], check=True,
+        # timeout: 이 함수는 GUI 스레드에서 불린다. taskkill이 응답하지 않으면
+        # 제어판 창이 통째로 굳으므로 상한을 둔다.
+        subprocess.run(["taskkill", "/PID", str(pid), "/F"], check=True, timeout=10,
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                         creationflags=_NO_WINDOW)
         return True
