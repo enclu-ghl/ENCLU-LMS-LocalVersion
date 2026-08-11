@@ -1,0 +1,21 @@
+# ENCLU SCM ALL SYSTEM — 허브 진입점 의존성
+#
+# 허브 자체(ENCLU-SCM-ALL-SYSTEM.py + hub/)는 표준 라이브러리만 쓴다.
+# tkinter는 Windows 공식 파이썬에 기본 포함이라 여기 적지 않는다.
+# 따라서 런타임 의존성은 없고, 아래는 exe 빌드에만 필요하다.
+
+pyinstaller>=6.0
+
+# ──────────────────────────────────────────────────────────────
+# 2단계(업무 프로그램 exe 내장)에서 추가될 것들 — 지금은 각 프로그램 폴더에서
+# 자체 venv로 설치해 쓰고 있어 여기 넣지 않는다. 미리 넣으면 exe만 수백 MB로 불어난다.
+#
+# pandas
+# openpyxl
+# xlsxwriter
+# sqlalchemy
+# psycopg2-binary
+# python-dotenv
+# tkinterdnd2
+# selenium
+# ──────────────────────────────────────────────────────────────

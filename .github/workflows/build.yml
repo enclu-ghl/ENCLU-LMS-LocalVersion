@@ -1,0 +1,95 @@
+name: Build & Release
+
+# main에 push되면 exe를 빌드하고, version.txt의 버전으로 태그가 아직 없을 때만
+# 새 Release를 만들어 exe를 올린다.
+# → 버전을 안 올리고 push하면 빌드 검증만 하고 릴리스는 건너뛴다.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "_migration_docs/**"
+      - "통합시스템_설치_설명서.txt"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: 소스 체크아웃
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 버전 읽기
+        id: ver
+        shell: bash
+        run: |
+          VERSION=$(tr -d ' \r\n' < version.txt)
+          if [ -z "$VERSION" ]; then
+            echo "::error::version.txt가 비어 있습니다."
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "빌드 버전: $VERSION"
+
+      - name: 태그 중복 확인
+        id: tagcheck
+        shell: bash
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/${{ steps.ver.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::${{ steps.ver.outputs.tag }} 태그가 이미 있습니다 — 빌드만 하고 릴리스는 건너뜁니다."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Python 준비
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 빌드 도구 설치
+        run: pip install --upgrade pip pyinstaller
+
+      - name: exe 빌드
+        run: pyinstaller --noconfirm --clean ENCLU_SCM.spec
+
+      - name: 산출물 확인
+        shell: bash
+        run: |
+          test -f dist/ENCLU_SCM.exe || { echo "::error::dist/ENCLU_SCM.exe가 생성되지 않았습니다."; exit 1; }
+          ls -lh dist/ENCLU_SCM.exe
+
+      - name: 빌드 산출물 업로드 (릴리스와 무관하게 항상 보관)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENCLU_SCM-${{ steps.ver.outputs.version }}
+          path: dist/ENCLU_SCM.exe
+          retention-days: 14
+
+      - name: Release 생성 및 exe 업로드
+        if: steps.tagcheck.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ENCLU SCM ${{ steps.ver.outputs.tag }}
+          body: |
+            ENCLU SCM ALL SYSTEM ${{ steps.ver.outputs.tag }}
+
+            **설치 방법**
+            1. 아래 `ENCLU_SCM.exe`를 내려받습니다.
+            2. 원하는 폴더(예: `C:\ENCLU_SCM\`)에 두고 실행합니다.
+            3. 첫 실행 시 초기설정 창이 뜹니다. 폴더와 테마를 정해주세요.
+
+            이미 쓰고 계신 분은 프로그램을 켜면 업데이트 안내가 자동으로 뜹니다.
+            설정(config.json)은 업데이트 후에도 그대로 유지됩니다.
+          files: dist/ENCLU_SCM.exe
+          draft: false
+          prerelease: false

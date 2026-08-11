@@ -22,3 +22,14 @@ UPH 시스템/Download the Uph file/*
 # 실제 서버 설정 파일
 박스추천프로그램/pg_hba.conf
 박스추천프로그램/postgresql.conf
+
+# exe 빌드 산출물 (GitHub Actions가 만들어 Releases로 올린다)
+build/
+dist/
+
+# 개발 PC의 개인 설정 — 팀원 PC에서는 첫 실행 시 자동 생성된다
+config.json
+
+# 파일찢기 프로그램의 개인 설정 (저장 폴더 경로에 Windows 사용자명이 들어간다).
+# 없으면 프로그램이 빈 설정으로 시작하므로 저장소에 둘 이유가 없다.
+주문파일정리 프로그램/settings.json
