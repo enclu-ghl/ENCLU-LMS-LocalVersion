@@ -93,7 +93,9 @@ APPS = [
         "icon": "🖥",
         "badge_color": "#6A1B9A",
         "badge_bg": "#F3E5F5",
-        "status_text": "로컬 자동화 · 상시 실행",
+        # 여러 PC에서 동시에 돌리면 같은 파일을 각자 읽어 DB에 중복 반영된다.
+        # 지정된 PC에서만 쓰라는 걸 카드에서 바로 보이게 한다.
+        "status_text": "지정 로컬 PC 실행 전용",
         "mode": "subprocess",
     },
     {
@@ -115,6 +117,16 @@ APPS = [
         "badge_bg": "#FFF3E0",
         "status_text": "큐텐 전체 · 아마존/라쿠텐 정리",
         "mode": "subprocess",
+    },
+    {
+        "key": "sichaek_verify",
+        "title": "시책 검증\n프로그램",
+        "desc": "WMS · OMS 사은품 적용 대조 ·\n업체별 · 시책별 불일치 검출",
+        "icon": "🎁",
+        "badge_color": "#757575",
+        "badge_bg": "#F5F5F5",
+        "status_text": "개발 예정",
+        "mode": "coming_soon",
     },
     {
         "key": "oms_invoice",
@@ -205,13 +217,18 @@ class HubApp:
                  font=("맑은 고딕", 9),
                  bg=pal["BG_HDR"], fg=pal["TEXT_SUB"]).pack(anchor="w", padx=24, pady=8)
 
-        # ── 앱 카드 (3×3 그리드) ──
+        # ── 앱 카드 (3열 그리드, 앱 수에 맞춰 행이 늘어난다) ──
+        # 예전에는 위치를 3×3으로 고정해뒀던 탓에, 카드를 10개째 추가하면
+        # 그 카드가 조용히 안 보였다. 앱 목록만 늘리면 되도록 계산으로 바꿨다.
         grid = tk.Frame(self.root, bg=pal["BG"])
         grid.pack(padx=20, pady=(14, 20))
-        positions = [(r, c) for r in range(3) for c in range(3)]
-        for (r, c), app_info in zip(positions, APPS):
+        # 열 수는 화면 높이에 맞춰 정한다. 창은 크기 조절이 막혀 있어서, 카드가
+        # 늘어나 세로가 화면을 넘으면 아래쪽 카드를 볼 방법이 아예 없어진다.
+        # (카드 10개를 3열로 놓으면 1179px가 되어 1080p 모니터에서 잘렸다)
+        cols = 3 if len(APPS) <= 9 else 4
+        for i, app_info in enumerate(APPS):
             card = self._make_card(grid, app_info)
-            card.grid(row=r, column=c, padx=8, pady=8, sticky="nsew")
+            card.grid(row=i // cols, column=i % cols, padx=8, pady=8, sticky="nsew")
 
         # ── 하단 안내 ──
         missing = [a for a in APPS if self._availability(a) == "missing"]

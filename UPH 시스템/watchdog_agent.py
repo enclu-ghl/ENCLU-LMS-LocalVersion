@@ -554,9 +554,20 @@ def is_file_settled(filepath):
 # 메인
 # ══════════════════════════════════════════════════════════════
 def main():
+    # 감시 폴더는 없으면 만든다.
+    # 예전에는 없으면 그냥 종료했는데, 통합 exe를 새 PC에 설치하면 이 폴더가 당연히
+    # 없어서 UPH 제어판에서 시작을 눌러도 즉시 죽어버렸다. 폴더를 만들지 못하는
+    # 경우(권한 없음 등)에만 실패로 처리한다.
     if not os.path.isdir(WATCH_FOLDER):
-        log.error(f"감시 폴더가 존재하지 않습니다: {WATCH_FOLDER}  (.env의 UPH_WATCH_FOLDER 확인)")
-        sys.exit(1)
+        try:
+            os.makedirs(WATCH_FOLDER, exist_ok=True)
+            log.info(f"감시 폴더를 새로 만들었습니다: {WATCH_FOLDER}")
+        except OSError as e:
+            log.error(
+                f"감시 폴더를 만들 수 없습니다: {WATCH_FOLDER}  ({e})\n"
+                f"  → 다른 위치를 쓰려면 환경변수 UPH_WATCH_FOLDER를 지정하세요."
+            )
+            sys.exit(1)
 
     engine = get_engine()
     cache_conn = init_cache_db()

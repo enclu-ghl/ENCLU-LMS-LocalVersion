@@ -82,13 +82,22 @@ class MacroLauncherApp:
         self._append_log("=" * 48, "info")
         self._append_log("상품 매칭 자동화 매크로 런처", "info")
         self._append_log("=" * 48, "info")
-        if os.path.exists(_VENV_PYTHON):
-            self._append_log(f"✅ 가상환경(venv) Python 감지됨", "ok")
+        # 통합 시스템 exe 안에서 돌 때는 venv도, 별도 파이썬도, .py 파일도 쓰지 않는다.
+        # 그런데 예전 안내문을 그대로 두면 "venv를 찾지 못했습니다"라는 경고와 함께
+        # 존재하지 않는 임시 폴더의 .py 경로가 찍혀서, 문제가 있는 것처럼 보인다.
+        # (실제 신고 있었음 — 정상 동작인데 경고로 오해)
+        if _hub_child and _hub_child.paths.IS_FROZEN:
+            self._append_log("✅ 통합 시스템에 내장된 매크로를 사용합니다", "ok")
+            self._append_log("  별도 Python이나 venv 설치가 필요 없습니다.", "dim")
+        elif os.path.exists(_VENV_PYTHON):
+            self._append_log("✅ 가상환경(venv) Python 감지됨", "ok")
+            self._append_log(f"  Python: {PYTHON_EXE}", "dim")
+            self._append_log(f"  매크로: {MACRO_FILE}", "dim")
         else:
             self._append_log("⚠ venv를 찾지 못했습니다. 시스템 Python으로 실행됩니다.", "warn")
             self._append_log("  → 작업 폴더에 venv 폴더가 있는지 확인해주세요.", "warn")
-        self._append_log(f"  Python: {PYTHON_EXE}", "dim")
-        self._append_log(f"  매크로: {MACRO_FILE}", "dim")
+            self._append_log(f"  Python: {PYTHON_EXE}", "dim")
+            self._append_log(f"  매크로: {MACRO_FILE}", "dim")
         self._append_log("Chrome 실행 버튼을 누르고 매칭 팝업을 열어두세요.", "info")
 
     # ────────────────────────────────────────────────────────────
