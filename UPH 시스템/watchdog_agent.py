@@ -50,7 +50,29 @@ from psycopg2.extras import execute_values
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")                     # 기존 Streamlit 앱과 동일한 Supabase 접속정보 재사용
-WATCH_FOLDER = os.getenv("UPH_WATCH_FOLDER", r"C:\ENCLU\WMS_다운로드")   # WMS 파일이 떨어지는 폴더
+
+
+def _default_watch_folder() -> str:
+    """감시 폴더 기본값.
+
+    통합 exe로 배포됐을 때는 **프로그램 폴더 안**에 만든다.
+    예전 기본값은 C:\\ENCLU\\WMS_다운로드 였는데, 설치 위치로 안내하는
+    C:\\ENCLU_SCM\\ 과 이름만 비슷한 전혀 다른 폴더라 "폴더가 안 생긴다"는
+    신고가 실제로 있었다. 프로그램 옆에 있으면 찾을 일이 없다.
+
+    단독 실행(.py)일 때는 예전 기본값을 유지한다 — 기존 운영 PC는 .env의
+    UPH_WATCH_FOLDER로 경로를 지정해 쓰고 있어 어차피 영향을 받지 않는다.
+    """
+    try:
+        from hub import paths
+        if paths.IS_FROZEN:
+            return os.path.join(paths.APP_DIR, "WMS_다운로드")
+    except ImportError:
+        pass
+    return r"C:\ENCLU\WMS_다운로드"
+
+
+WATCH_FOLDER = os.getenv("UPH_WATCH_FOLDER") or _default_watch_folder()  # WMS 파일이 떨어지는 폴더
 CACHE_DB_PATH = os.getenv("UPH_CACHE_DB", "uph_agent_cache.sqlite3")     # 로컬 "직전 상태" 캐시
 POLL_INTERVAL_SEC = int(os.getenv("UPH_POLL_INTERVAL_SEC", "10"))       # 폴더 감시 주기(초)
 MAPPING_REFRESH_SEC = int(os.getenv("UPH_MAPPING_REFRESH_SEC", "300"))  # 판매처→동 매핑 갱신 주기(초)
