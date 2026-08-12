@@ -17,6 +17,9 @@ python-dotenv
 
 # 파일찢기 (주문파일정리)
 beautifulsoup4
+lxml                    # ⚠️ BeautifulSoup(html, "lxml") 로 문자열 지정해서 쓴다.
+                        #    import 문이 없어 PyInstaller가 못 잡으므로 반드시 여기+spec에 명시.
+                        #    빠지면 exe에서 WMS 파일을 읽는 순간 죽는다 (실제 사고).
 pykakasi                # 아마존 요미가나 변환
 
 # 박스추천

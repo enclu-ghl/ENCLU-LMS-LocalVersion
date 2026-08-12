@@ -19,6 +19,7 @@ DB 접속정보는 exe에 넣지 않는다 — 공개 릴리스라 그대로 유
 각 PC에서 최초 1회 입력받아 DPAPI로 암호화 저장한다 (hub/secrets.py).
 """
 
+import sys
 import tkinter as tk
 import webbrowser
 from tkinter import messagebox
@@ -446,6 +447,12 @@ def _make_root() -> tk.Tk:
 
 
 def main():
+    # `--selftest`: 이 PC에서 각 기능이 실제로 도는지 점검하고 끝낸다.
+    # 배포 전/문제 신고 시 원인을 빨리 좁히기 위한 것. 결과는 파일로도 남는다.
+    if "--selftest" in sys.argv:
+        from hub import selftest
+        sys.exit(1 if selftest.run() else 0)
+
     # exe가 `--run <이름>`으로 실행됐으면 GUI 없이 그 자식 스크립트만 돌리고 끝낸다.
     # (자동매칭·UPH 제어판이 내부 작업을 띄울 때 이 경로로 자기 자신을 재실행한다)
     # 반드시 Tk 루트를 만들기 전에 처리해야 한다.

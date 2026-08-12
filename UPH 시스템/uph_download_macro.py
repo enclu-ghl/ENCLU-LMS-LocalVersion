@@ -43,8 +43,18 @@ from selenium.common.exceptions import (
 )
 
 # ── stdout UTF-8 강제 설정 (Windows cp949 환경 한글 깨짐 방지) ──
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True)
+# ⚠️ 콘솔 없는 exe(통합 시스템) 안에서는 sys.stdout이 None이라 .buffer 접근이
+#    import 시점에 AttributeError로 죽는다 — 매크로가 아예 안 뜬다 (자가진단으로 발견).
+def _force_utf8(name):
+    stream = getattr(sys, name, None)
+    buf = getattr(stream, "buffer", None)
+    if buf is not None:
+        setattr(sys, name, io.TextIOWrapper(
+            buf, encoding="utf-8", errors="replace", line_buffering=True))
+
+
+_force_utf8("stdout")
+_force_utf8("stderr")
 
 IS_GUI = (not sys.stdin) or (not sys.stdin.isatty())
 
