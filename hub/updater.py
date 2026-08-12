@@ -131,7 +131,12 @@ def _swap_script(new_exe: str, current_exe: str) -> str:
     # 실행 파일 이름은 경로에서 뽑는다 — 이름을 바꿔서 쓰는 PC가 있어도
     # 아래 '남은 프로세스 대기' 루프가 헛돌지 않도록.
     exe_name = os.path.basename(current_exe)
-    body = f"""@echo off
+    # ⚠️ 경로를 배치 본문에 문자열로 박지 않는다.
+    #    본문을 ASCII로 쓰기 때문에 경로에 한글이 있으면 '?'로 치환되어
+    #    존재하지 않는 경로가 되고, move가 30번 실패한 뒤 조용히 포기한다
+    #    (= "업데이트를 눌렀는데 버전이 그대로"). Windows 사용자명이 한글인 PC의
+    #    %TEMP% 경로에서도 같은 일이 난다. 그래서 환경변수로 넘긴다.
+    body = rf"""@echo off
 rem ENCLU SCM auto-update helper. Deletes itself when done.
 setlocal enableextensions
 
@@ -158,7 +163,7 @@ goto waitloop
 rem --- 2) retry the swap; the bootloader parent may still hold the file ---
 set /a _t=0
 :retry
-move /y "{new_exe}" "{current_exe}" >nul 2>&1
+move /y "%ENCLU_NEW%" "%ENCLU_CUR%" >nul 2>&1
 if not errorlevel 1 goto ok
 set /a _t+=1
 if %_t% GEQ 30 goto failed
@@ -175,7 +180,7 @@ rem even though the swap itself succeeded. Waiting here costs a few seconds and
 rem removes the race entirely.
 set /a _g=0
 :gone
-tasklist /FI "IMAGENAME eq {exe_name}" /NH 2>nul | find /I "{exe_name}" >nul
+tasklist /FI "IMAGENAME eq %ENCLU_EXENAME%" /NH 2>nul | find /I "%ENCLU_EXENAME%" >nul
 if errorlevel 1 goto launch
 set /a _g+=1
 if %_g% GEQ 20 goto launch
@@ -184,22 +189,28 @@ goto gone
 
 :launch
 ping -n 4 127.0.0.1 >nul
-start "" "{current_exe}"
+start "" "%ENCLU_CUR%"
 del "%~f0"
 exit /b 0
 
 :failed
-echo [ENCLU SCM] update failed - could not replace the exe. > "{log_path}"
-echo downloaded: {new_exe} >> "{log_path}"
-echo target    : {current_exe} >> "{log_path}"
-echo Close the program completely and copy the downloaded file over the target manually. >> "{log_path}"
-start "" "{current_exe}"
+echo [ENCLU SCM] update failed - could not replace the exe. > "%ENCLU_LOG%"
+echo downloaded: %ENCLU_NEW% >> "%ENCLU_LOG%"
+echo target    : %ENCLU_CUR% >> "%ENCLU_LOG%"
+echo Close the program completely and copy the downloaded file over the target manually. >> "%ENCLU_LOG%"
+start "" "%ENCLU_CUR%"
 del "%~f0"
 exit /b 1
 """
     with open(script, "w", encoding="ascii", errors="replace") as f:
         f.write(body)
-    return script
+    # 경로는 본문이 아니라 환경변수로 전달한다 (한글 경로가 '?'로 뭉개지는 걸 피함)
+    return script, {
+        "ENCLU_NEW": new_exe,
+        "ENCLU_CUR": current_exe,
+        "ENCLU_LOG": log_path,
+        "ENCLU_EXENAME": exe_name,
+    }
 
 
 #: PyInstaller 부트로더가 자식에게 물려주는 내부 변수들.
@@ -230,14 +241,62 @@ def _clean_env() -> dict:
     return env
 
 
+def kill_run_children() -> int:
+    """`--run`으로 띄운 자식 프로세스(watchdog·매크로)를 정리한다. 죽인 개수 반환.
+
+    업데이트 직전에 반드시 불러야 한다. 이유 두 가지:
+      1) 이 자식들은 이미지 이름이 허브와 같은 ENCLU_SCM.exe다. 교체 배치의
+         '남은 프로세스 대기' 루프가 이들을 허브로 착각해 40초를 헛돌고 넘어간다.
+      2) os._exit(0)은 정리 절차를 건너뛰므로 자식이 그대로 살아남는다. 그러면
+         업데이트 후 구버전 워커와 신버전 허브가 동시에 돌고, UPH의 경우
+         같은 파일을 두 번 읽어 DB에 중복 반영된다.
+    """
+    if os.name != "nt" or not paths.IS_FROZEN:
+        return 0
+    exe = os.path.basename(sys.executable)
+    no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        out = subprocess.run(
+            ["wmic", "process", "where", f"name='{exe}'", "get", "ProcessId,CommandLine"],
+            capture_output=True, text=True, timeout=10, creationflags=no_win,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return 0
+
+    killed = 0
+    me = os.getpid()
+    for line in out.splitlines():
+        line = line.strip()
+        if "--run" not in line:
+            continue
+        parts = line.rsplit(None, 1)
+        if len(parts) != 2 or not parts[1].isdigit():
+            continue
+        pid = int(parts[1])
+        if pid == me:
+            continue
+        try:
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                           capture_output=True, timeout=10, creationflags=no_win)
+            killed += 1
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return killed
+
+
 def apply_and_restart(new_exe: str) -> bool:
     """새 exe로 교체하고 재실행한다. 성공하면 이 프로세스는 곧 종료된다."""
     current = os.path.abspath(sys.executable)
+    # 자식(watchdog·매크로)을 먼저 정리한다 — 안 그러면 교체 배치가 이들을 허브로
+    # 착각해 대기 루프를 헛돌고, 구버전 워커가 업데이트 후에도 계속 돈다.
+    kill_run_children()
     try:
-        script = _swap_script(new_exe, current)
+        script, path_env = _swap_script(new_exe, current)
+        env = _clean_env()
+        env.update(path_env)
         subprocess.Popen(
             ["cmd", "/c", script],
-            env=_clean_env(),
+            env=env,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         return True

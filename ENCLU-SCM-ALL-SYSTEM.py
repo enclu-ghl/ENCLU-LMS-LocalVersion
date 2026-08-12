@@ -461,7 +461,12 @@ def main():
     # 배포 전/문제 신고 시 원인을 빨리 좁히기 위한 것. 결과는 파일로도 남는다.
     if "--selftest" in sys.argv:
         from hub import selftest
-        sys.exit(1 if selftest.run() else 0)
+        # --no-window: CI/원격 점검용. 창 없이 결과 파일과 종료코드만 남긴다.
+        # --ci: 빌드 서버에 없는 것(Chrome·접속정보)은 실패로 치지 않는다.
+        sys.exit(1 if selftest.run(
+            show_window="--no-window" not in sys.argv,
+            ci="--ci" in sys.argv,
+        ) else 0)
 
     # exe가 `--run <이름>`으로 실행됐으면 GUI 없이 그 자식 스크립트만 돌리고 끝낸다.
     # (자동매칭·UPH 제어판이 내부 작업을 띄울 때 이 경로로 자기 자신을 재실행한다)

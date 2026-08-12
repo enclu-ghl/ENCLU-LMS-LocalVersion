@@ -20,7 +20,11 @@ try:
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
     MATPLOTLIB_AVAILABLE = True
-except ImportError:
+except Exception:
+    # ⚠️ ImportError만 잡으면 안 된다. 통합 exe에서 실제로 나는 실패는
+    #    mpl-data 누락 -> FileNotFoundError, 폰트 캐시 폴더 문제 -> OSError 처럼
+    #    ImportError가 아닌 경우가 많다. 그걸 놓치면 이 방어가 무력화되어
+    #    5번 탭만 비활성되는 대신 박스추천 전체가 못 뜬다.
     MATPLOTLIB_AVAILABLE = False
 
 # -----------------------------------------------------------------------------
@@ -476,7 +480,13 @@ class IntegratedBoxApp:
                         break
 
             success_count = 0
+            # 맑은 고딕이 없는 PC(영문 로케일·N 에디션·언어팩 미설치)를 위한 폴백.
+            # ⚠️ 예전에는 폰트가 없으면 fontname=None을 넘겼는데, PyMuPDF는 그 값에
+            #    .startswith()를 호출해서 AttributeError로 죽는다 — "폰트 없으면
+            #    기본 폰트로"라는 의도와 정반대로 100% 크래시였다 (실측 확인).
+            #    PyMuPDF 내장 CJK 폰트 'korea'를 쓰면 시스템 폰트 없이도 한글이 나온다.
             font_path = KOREAN_FONT_PATH if os.path.exists(KOREAN_FONT_PATH) else None
+            font_name = "ko_font" if font_path else "korea"
             
             for page_num, box_size in page_updates.items():
                 page = doc[page_num]
@@ -489,8 +499,8 @@ class IntegratedBoxApp:
                     fitz.Point(last_instance.x0, last_instance.y1 - 3), 
                     f"엔클루   {box_size}", 
                     fontsize=8, 
-                    fontfile=font_path, 
-                    fontname="ko_font" if font_path else None, 
+                    fontfile=font_path,
+                    fontname=font_name,
                     color=(0, 0, 0)
                 )
                 success_count += 1

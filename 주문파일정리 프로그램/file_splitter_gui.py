@@ -440,10 +440,21 @@ def read_wms_excel(filepath):
     elif ext == ".xlsx":
         return pd.read_excel(filepath, engine="openpyxl", dtype=str)
     elif ext == ".csv":
-        try:
-            return pd.read_csv(filepath, encoding="utf-8-sig", dtype=str)
-        except UnicodeDecodeError:
-            return pd.read_csv(filepath, encoding="cp949", dtype=str)
+        # 라쿠텐 RMS가 내려주는 원본 CSV는 Shift_JIS(cp932)가 표준이다.
+        # 예전에는 utf-8-sig -> cp949(한국어) 두 개뿐이라, cp932 파일을 만나면
+        # 디코드 에러로 죽거나 운 나쁘면 깨진 글자로 읽혀 헤더가 망가졌다
+        # (그러면 "원본 파일 필수 컬럼 누락"으로 실패한다). 일본어 인코딩을 먼저 본다.
+        last_err = None
+        for enc in ("utf-8-sig", "cp932", "shift_jis", "euc-jp", "cp949"):
+            try:
+                return pd.read_csv(filepath, encoding=enc, dtype=str)
+            except UnicodeDecodeError as e:
+                last_err = e
+                continue
+        raise ValueError(
+            f"CSV 인코딩을 판별하지 못했습니다: {os.path.basename(filepath)}\n"
+            f"(utf-8 / cp932 / shift_jis / euc-jp / cp949 모두 실패)\n{last_err}"
+        )
     else:
         raise ValueError(f"지원하지 않는 파일 형식입니다: {ext}")
 
@@ -536,13 +547,39 @@ def _pykakasi_fallback(text):
     return "".join(r["kana"] for r in result)
 
 
+#: 요미가나 API가 돌려줘도 되는 문자 — 가나/한자/로마자/숫자/공백/기본 문장부호.
+#  사내 프록시·보안 게이트웨이가 "차단 안내 HTML"을 200 OK로 돌려주는 일이 흔한데,
+#  그걸 검증 없이 받으면 HTML 덩어리가 이름인 줄 알고 캐시되고 그대로 파일에 저장된다.
+#  개발 PC(직결 인터넷)에서는 절대 재현되지 않고 직원 PC(사내망)에서만 나온다.
+_YOMIGANA_OK = re.compile(
+    r"^[぀-ゟ゠-ヿ一-鿿ｦ-ﾟA-Za-z0-9ー・\s\.\-',/]*$"
+)
+
+
 def _call_excelapi(endpoint, param_name, text, timeout=10):
     import urllib.request
     import urllib.parse
     encoded = urllib.parse.quote(str(text))
     url = f"https://api.excelapi.org/language/{endpoint}?{param_name}={encoded}"
-    with urllib.request.urlopen(url, timeout=timeout) as resp:
-        return resp.read().decode("utf-8").strip()
+    req = urllib.request.Request(url, headers={
+        # UA 없는 요청을 막는 게이트웨이가 있어 명시한다.
+        "User-Agent": "ENCLU-SCM/1.0 (+internal tool)",
+        "Accept": "text/plain",
+    })
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        if getattr(resp, "status", 200) != 200:
+            raise ValueError(f"HTTP {resp.status}")
+        raw = resp.read(4096)          # 정상 응답은 이름 한 줄뿐 — 길면 안내 페이지다
+        result = raw.decode("utf-8", errors="replace").strip()
+
+    # 응답 검증. 여기서 걸러내지 않으면 잘못된 값이 '성공'으로 저장된다.
+    if not result:
+        raise ValueError("빈 응답")
+    if len(result) > max(40, len(str(text)) * 4):
+        raise ValueError(f"응답이 비정상적으로 김 ({len(result)}자) — 안내 페이지로 보임")
+    if not _YOMIGANA_OK.match(result):
+        raise ValueError(f"이름으로 볼 수 없는 응답: {result[:40]!r}")
+    return result
 
 
 _english_only_pattern = re.compile(r"^[A-Za-z0-9\s\.\-'/,]*$")

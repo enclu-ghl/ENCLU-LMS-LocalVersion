@@ -102,6 +102,30 @@ jobs:
           test -f dist/ENCLU_SCM.exe || { echo "::error::dist/ENCLU_SCM.exe가 생성되지 않았습니다."; exit 1; }
           ls -lh dist/ENCLU_SCM.exe
 
+      # ⚠️ 이 단계가 없어서 지난 세 번의 사고(lxml / pykakasi 사전 / selenium 지연 import)가
+      #    전부 직원 PC에 배포된 뒤에야 드러났다. 전부 exe를 한 번 실행해봤다면 잡혔을 것들이다.
+      #    빌드 성공 != 동작 보장. 여기서 실제로 굴려보고 실패하면 릴리스를 막는다.
+      - name: 자가진단 (배포 전 실동작 확인)
+        shell: bash
+        run: |
+          ./dist/ENCLU_SCM.exe --selftest --no-window --ci
+          code=$?
+          echo "--- selftest_result.txt ---"
+          cat dist/selftest_result.txt 2>/dev/null || echo "(결과 파일 없음)"
+          if [ $code -ne 0 ]; then
+            echo "::error::자가진단 실패 — 이 exe는 배포하면 안 됩니다. 위 결과를 확인하세요."
+            exit 1
+          fi
+
+      - name: 자가진단 결과 보관
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: selftest-${{ steps.ver.outputs.version }}
+          path: dist/selftest_result.txt
+          retention-days: 14
+          if-no-files-found: warn
+
       - name: 빌드 산출물 업로드 (릴리스와 무관하게 항상 보관)
         uses: actions/upload-artifact@v4
         with:

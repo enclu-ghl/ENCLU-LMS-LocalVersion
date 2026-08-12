@@ -149,18 +149,61 @@ def _run_checks(rep: Report) -> None:
         return "PostgreSQL 드라이버·dialect 적재 성공"
 
     def mpl_backend():
+        """3D 시뮬레이션을 실제로 한 장 그려본다.
+
+        import만 해서는 mpl_toolkits.mplot3d 등록 여부도, mpl-data(폰트·설정) 유무도
+        확인되지 않는다. 실제로 3d 축을 만들고 그려봐야 드러난다.
+        """
+        import time
+        t0 = time.time()
         import matplotlib
         matplotlib.use("Agg")
+        import matplotlib.font_manager  # 첫 실행 시 폰트 캐시를 만든다 (느릴 수 있음)
+        font_sec = time.time() - t0
+
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
         from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg  # noqa: F401
-        return "3D 시뮬레이션 그래프 백엔드 있음"
+
+        fig = Figure(figsize=(2, 2))
+        ax = fig.add_subplot(111, projection="3d")   # ← mplot3d가 없으면 여기서 죽는다
+        ax.bar3d(0, 0, 0, 1, 1, 1)
+        FigureCanvasAgg(fig).draw()
+        return f"3D 렌더링 성공 (폰트 준비 {font_sec:.1f}초)"
 
     def pdf_reader():
+        """PDF에 한글을 실제로 써본다.
+
+        박스추천 2번 탭이 송장 PDF에 '엔클루 B-16' 같은 글자를 써 넣는다.
+        맑은 고딕이 없는 PC에서 예전 코드는 fontname=None을 넘겨 확실히 죽었다.
+        """
         import fitz
-        return f"PyMuPDF {fitz.__doc__.strip().splitlines()[0] if fitz.__doc__ else ''}".strip()
+        doc = fitz.open()
+        page = doc.new_page()
+        win_font = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts", "malgun.ttf")
+        has_malgun = os.path.exists(win_font)
+        page.insert_text(fitz.Point(50, 80), "엔클루  B-16", fontsize=8,
+                         fontfile=win_font if has_malgun else None,
+                         fontname="ko_font" if has_malgun else "korea")
+        doc.close()
+        return f"한글 쓰기 성공 (맑은 고딕 {'있음' if has_malgun else '없음 → 내장 폰트 사용'})"
 
     def dnd():
-        from tkinterdnd2 import TkinterDnD  # noqa: F401
-        return "드래그앤드롭 지원"
+        """드롭 대상 등록까지 실제로 해본다.
+
+        `from tkinterdnd2 import TkinterDnD` 는 tkdnd의 Tcl 파일이 통째로 빠져도
+        성공한다. 그러면 허브는 조용히 일반 Tk로 폴백하고, 박스추천이 드롭을
+        등록하는 순간 TclError로 창째 죽는다 — pykakasi 때와 같은 패턴이다.
+        """
+        import tkinter as tk
+        from tkinterdnd2 import DND_FILES, TkinterDnD
+        root = TkinterDnD.Tk()
+        root.withdraw()
+        try:
+            tk.Label(root).drop_target_register(DND_FILES)   # ← tkdnd 없으면 여기서 죽는다
+        finally:
+            root.destroy()
+        return "드롭 대상 등록 성공 (tkdnd Tcl 패키지 정상)"
 
     def kakasi():
         import pykakasi
@@ -244,13 +287,25 @@ def _run_checks(rep: Report) -> None:
     rep.check("환경", "DB 접속정보", creds)
 
 
-def run(show_window: bool = True) -> int:
-    """자가진단 실행. 문제 건수를 돌려준다 (0이면 이상 없음)."""
+def run(show_window: bool = True, ci: bool = False) -> int:
+    """자가진단 실행. 문제 건수를 돌려준다 (0이면 이상 없음).
+
+    show_window=False 는 CI용 — 창을 띄우지 않고 결과 파일과 종료코드만 남긴다.
+    ci=True 면 빌드 서버에만 해당하는 항목(Chrome 미설치 등)을 실패로 치지 않는다.
+    """
     rep = Report()
     try:
         _run_checks(rep)
     except Exception:
         rep.fail("점검", "자가진단 자체가 중단됨", traceback.format_exc()[-500:])
+
+    if ci:
+        # 빌드 서버에는 Chrome도 DB 접속정보도 없다 — 그걸로 릴리스를 막으면 안 된다.
+        # 정작 잡아야 할 것(번들 누락)은 '프로그램 적재'와 '기능 점검'에서 나온다.
+        rep.rows = [
+            (g, n, ("warn" if (s == "fail" and n in ("Chrome 설치", "DB 접속정보")) else s), d)
+            for g, n, s, d in rep.rows
+        ]
 
     text = rep.text()
 

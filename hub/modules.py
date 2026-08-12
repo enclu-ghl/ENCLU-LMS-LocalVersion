@@ -125,13 +125,21 @@ def launch(parent, key: str, theme_name: str = "light"):
 
     try:
         module = _import(key)
-    except ImportError as e:
+    except Exception as e:
+        # ⚠️ ImportError만 잡으면 안 된다. exe에서 실제로 나는 실패는 대개 다른 예외다:
+        #    matplotlib이 mpl-data를 못 찾으면 FileNotFoundError,
+        #    네이티브 DLL 로드 실패는 OSError.
+        #    이걸 놓치면 예외가 Tk 콜백에서 소멸되고 sys.stderr도 None이라
+        #    "카드를 눌러도 아무 일도 안 일어남"이 된다 (원인 추적 불가).
         messagebox.showerror(
             "실행할 수 없습니다",
-            f"{title} 을(를) 불러오지 못했습니다.\n\n{e}\n\n"
-            "필요한 라이브러리가 빠졌을 수 있습니다. 관리자에게 알려주세요.",
+            f"{title} 을(를) 불러오지 못했습니다.\n\n"
+            f"{type(e).__name__}: {e}\n\n"
+            "이 내용을 관리자에게 알려주세요.\n"
+            "(자세한 진단은 ENCLU_SCM.exe --selftest 로 확인할 수 있습니다)",
             parent=parent,
         )
+        traceback.print_exc()
         return None
 
     win = tk.Toplevel(parent)

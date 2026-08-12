@@ -43,6 +43,10 @@ FIELDS = {
 #  DB_PORT는 프로그램에 기본값(5432)이 있어 필수에서 뺀다.
 REQUIRED_BY = {
     "file_splitter": ["DATABASE_URL"],
+    # UPH 제어판이 띄우는 watchdog_agent가 DATABASE_URL을 쓴다. 여기 없으면
+    # UPH만 쓰는 PC에서는 값을 물어보지 않아 워커가 시작하자마자 죽고,
+    # 제어판에는 "오류로 중단됨"만 뜨고 원인이 안 보인다.
+    "uph_panel": ["DATABASE_URL"],
     "boxscm": ["DB_HOST", "DB_NAME", "DB_USER", "DB_PASSWORD"],
 }
 
