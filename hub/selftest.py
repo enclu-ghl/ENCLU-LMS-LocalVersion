@@ -140,9 +140,13 @@ def _run_checks(rep: Report) -> None:
         return "구형 .xls 읽기 엔진 있음 (WMS 다운로드 파일)"
 
     def pg_driver():
-        from sqlalchemy import create_engine
-        create_engine("postgresql+psycopg2://u:p@127.0.0.1:5432/d")  # 연결은 하지 않음
-        return "PostgreSQL 드라이버 적재 성공"
+        # 더미라도 커넥션 스트링 모양의 문자열은 쓰지 않는다 — CI의 접속정보 유출
+        # 검사가 (정확하게) 잡아서 빌드를 막는다. 실제로 한 번 막혔다.
+        # 확인하려는 건 "드라이버와 dialect가 exe에 들어있는가"이고,
+        # 아래 import만으로 그게 그대로 검증된다.
+        import psycopg2  # noqa: F401
+        from sqlalchemy.dialects.postgresql import psycopg2 as _dialect  # noqa: F401
+        return "PostgreSQL 드라이버·dialect 적재 성공"
 
     def mpl_backend():
         import matplotlib
