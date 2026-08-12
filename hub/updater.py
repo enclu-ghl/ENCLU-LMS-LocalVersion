@@ -135,6 +135,15 @@ def _swap_script(new_exe: str, current_exe: str) -> str:
 rem ENCLU SCM auto-update helper. Deletes itself when done.
 setlocal enableextensions
 
+rem --- 0) drop PyInstaller's internal vars (belt and braces) ---
+rem If _MEIPASS2 leaks into the relaunched exe it reuses the OLD unpack folder,
+rem which is already deleted -> "Failed to load Python DLL python3xx.dll".
+set "_MEIPASS2="
+set "_PYI_APPLICATION_HOME_DIR="
+set "_PYI_ARCHIVE_FILE="
+set "_PYI_PARENT_PROCESS_LEVEL="
+set "_PYI_SPLASH_IPC="
+
 rem --- 1) wait for the hub process to exit (max ~60s) ---
 set /a _w=0
 :waitloop
@@ -193,6 +202,34 @@ exit /b 1
     return script
 
 
+#: PyInstaller 부트로더가 자식에게 물려주는 내부 변수들.
+#  ⚠️ 이걸 지우지 않으면 업데이트 직후 새 exe가
+#     "Failed to load Python DLL ...\_MEIxxxxx\python312.dll" 로 실패한다.
+#
+#  이유: onefile exe는 자기를 %TEMP%\_MEIxxxxx 에 풀고 그 경로를 _MEIPASS2 로
+#  자식 프로세스에 물려준다. 우리가 띄우는 교체 스크립트(cmd)도 자식이라 이 값을
+#  물려받고, 스크립트가 `start`로 새 exe를 띄우면 새 부트로더가 _MEIPASS2를 보고
+#  "이미 풀려 있다"고 판단해 **옛 폴더**를 쓴다. 그런데 그 폴더는 옛 프로세스가
+#  종료하면서 지워지므로 DLL을 못 찾는다.
+#
+#  교체 자체는 성공하기 때문에 "업데이트는 됐는데 오류창만 뜬다"로 보인다.
+_PYI_ENV_VARS = (
+    "_MEIPASS2",
+    "_PYI_APPLICATION_HOME_DIR",
+    "_PYI_ARCHIVE_FILE",
+    "_PYI_PARENT_PROCESS_LEVEL",
+    "_PYI_SPLASH_IPC",
+)
+
+
+def _clean_env() -> dict:
+    """PyInstaller 내부 변수를 걷어낸 환경변수 사본."""
+    env = dict(os.environ)
+    for name in _PYI_ENV_VARS:
+        env.pop(name, None)
+    return env
+
+
 def apply_and_restart(new_exe: str) -> bool:
     """새 exe로 교체하고 재실행한다. 성공하면 이 프로세스는 곧 종료된다."""
     current = os.path.abspath(sys.executable)
@@ -200,6 +237,7 @@ def apply_and_restart(new_exe: str) -> bool:
         script = _swap_script(new_exe, current)
         subprocess.Popen(
             ["cmd", "/c", script],
+            env=_clean_env(),
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         return True

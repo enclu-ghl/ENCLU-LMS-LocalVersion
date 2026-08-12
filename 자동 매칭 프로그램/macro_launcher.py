@@ -302,7 +302,12 @@ class MacroLauncherApp:
     def _start_macro(self):
         if self._running:
             return
-        if not os.path.exists(MACRO_FILE):
+        # 통합 exe 안에서는 matching_macro.py 라는 '파일'이 존재하지 않는다.
+        # 매크로는 번들 모듈이고, 허브 exe를 --run 인자로 재실행해서 돌린다.
+        # 이 확인을 그대로 두면 항상 "매크로 파일을 찾을 수 없습니다"가 떠서
+        # 매크로를 아예 못 쓴다 (실사용 신고). 단독 실행일 때만 확인한다.
+        _embedded = _hub_child is not None and _hub_child.paths.IS_FROZEN
+        if not _embedded and not os.path.exists(MACRO_FILE):
             messagebox.showerror(
                 "파일 없음",
                 f"매크로 파일을 찾을 수 없습니다:\n{MACRO_FILE}"
