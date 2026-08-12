@@ -168,8 +168,32 @@ def _run_checks(rep: Report) -> None:
         return "일본어 요미가나 변환 성공"
 
     def sel():
-        from selenium import webdriver  # noqa: F401
-        return "Selenium 적재 성공"
+        """매크로가 실제로 쓰는 Selenium API를 전부 건드려본다.
+
+        ⚠️ `from selenium import webdriver` 만으로는 부족하다.
+        selenium은 __getattr__ 안에서 importlib.import_module 로 하위 모듈을
+        지연 로딩하므로, 속성에 실제로 접근해야 그 import가 일어난다.
+        예전 점검은 import만 해서 통과했고, 직원 PC에서 매크로를 시작하는
+        순간에야 selenium.webdriver.chrome.options 없음으로 죽었다.
+        브라우저는 띄우지 않는다 — 클래스 접근까지만 한다.
+        """
+        from selenium import webdriver
+        from selenium.webdriver.common.action_chains import ActionChains  # noqa: F401
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.common.keys import Keys  # noqa: F401
+        from selenium.webdriver.support import expected_conditions as EC
+        from selenium.webdriver.support.ui import Select, WebDriverWait  # noqa: F401
+        from selenium.common.exceptions import (  # noqa: F401
+            NoSuchElementException, StaleElementReferenceException, TimeoutException,
+        )
+
+        opts = webdriver.ChromeOptions()      # ← 이번에 터졌던 지연 import
+        opts.add_experimental_option("debuggerAddress", "127.0.0.1:9222")
+        _ = webdriver.Chrome                  # 클래스 접근만 (실행 안 함)
+        _ = (By.CSS_SELECTOR, By.ID, By.XPATH, By.TAG_NAME, By.LINK_TEXT)
+        _ = (EC.presence_of_element_located, EC.visibility_of_element_located,
+             EC.invisibility_of_element_located)
+        return "매크로가 쓰는 API 전부 적재 성공 (브라우저는 띄우지 않음)"
 
     for name, fn in [
         ("HTML 파싱 (lxml)", bs4_lxml),

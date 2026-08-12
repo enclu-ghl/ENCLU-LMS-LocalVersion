@@ -7,7 +7,7 @@ version.txt를 번들에 넣는 게 핵심이다. 이걸 빼면 exe가 자기 �
 
 import os
 
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 datas = [("version.txt", ".")]
 if os.path.isdir("assets") and os.listdir("assets"):
@@ -30,6 +30,23 @@ PROGRAM_DIRS = [
     "자동 매칭 프로그램",
     "UPH 시스템",
 ]
+
+# ⚠️ 런타임에 importlib으로 하위 모듈을 불러오는 패키지는 **통째로** 넣는다.
+#
+# 예: selenium/webdriver/__init__.py 는 __getattr__ 안에서
+#       importlib.import_module("selenium.webdriver.chrome.options")
+#     식으로 지연 로딩한다. 정적 분석으로는 알아낼 방법이 아예 없어서,
+#     하나씩 hiddenimports에 적는 방식으로는 언제 또 터질지 알 수 없다.
+#     (실제로 lxml -> pykakasi 데이터 -> selenium 순으로 세 번 터졌다)
+#
+# exe가 커지지만 사내망 배포라 크기보다 "안 터지는 것"이 우선이다.
+LAZY_IMPORT_PACKAGES = ["selenium", "sqlalchemy", "bs4", "pykakasi"]
+lazy_hidden = []
+for _pkg in LAZY_IMPORT_PACKAGES:
+    try:
+        lazy_hidden += collect_submodules(_pkg)
+    except Exception:
+        pass
 
 a = Analysis(
     ["ENCLU-SCM-ALL-SYSTEM.py"],
@@ -58,7 +75,7 @@ a = Analysis(
         "matplotlib.backends.backend_tkagg",
         "tkinterdnd2",
         "pykakasi", "bs4",
-    ],
+    ] + lazy_hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
