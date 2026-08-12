@@ -270,10 +270,21 @@ class ProcessPanel:
 
     def stop(self):
         if self.proc and self.proc.poll() is None:
+            # ⚠️ terminate()는 직계 자식 하나만 죽인다. 통합 exe에서 자식은
+            #    PyInstaller onefile이라 부트로더 부모 + 실제 파이썬 자식 두 개로
+            #    뜨고, Popen이 준 pid는 부트로더 쪽이다. 그래서 종료를 눌러도
+            #    진짜 일하는 프로세스(그리고 그 밑의 chromedriver)가 살아남아
+            #    시작/중지를 반복할수록 쌓인다. /T 로 트리째 정리한다.
             try:
-                self.proc.terminate()
+                subprocess.run(
+                    ["taskkill", "/PID", str(self.proc.pid), "/T", "/F"],
+                    capture_output=True, timeout=10, creationflags=_NO_WINDOW,
+                )
             except Exception:
-                pass
+                try:
+                    self.proc.terminate()
+                except Exception:
+                    pass
         self.stop_time = datetime.now()
         self.status_label.config(text="● 중지됨", foreground="#888")
         self.start_btn.config(state="normal")

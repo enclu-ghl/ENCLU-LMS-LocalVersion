@@ -626,10 +626,42 @@ def _is_dead_session_error(e):
     return any(sig in msg for sig in DEAD_SESSION_SIGNATURES)
 
 
+def _watch_folder():
+    """watchdog이 감시하는 폴더. watchdog_agent와 같은 규칙으로 결정한다."""
+    env = os.getenv("UPH_WATCH_FOLDER")
+    if env:
+        return env
+    try:
+        from hub import paths
+        if paths.IS_FROZEN:
+            return os.path.join(paths.APP_DIR, "WMS_다운로드")
+    except ImportError:
+        pass
+    return r"C:\ENCLU\WMS_다운로드"
+
+
 def _connect_driver():
     options = webdriver.ChromeOptions()
     options.add_experimental_option("debuggerAddress", "127.0.0.1:9222")
-    return webdriver.Chrome(options=options)
+    driver = webdriver.Chrome(options=options)
+
+    # ⚠️ 다운로드 저장 위치를 코드로 강제한다.
+    #    예전에는 크롬 프로필 설정에만 의존했다. 새 PC에서는 디버그 프로필이 새로
+    #    만들어져 기본값(%USERPROFILE%\Downloads)으로 저장되는데, watchdog은
+    #    WMS_다운로드 폴더만 본다. 그러면 매크로는 계속 받고 에이전트는 아무것도
+    #    못 읽는데 두 프로세스 다 살아있어서 겉으로는 정상으로 보인다
+    #    ("다운로드 폴더엔 파일이 쌓이는데 DB는 그대로" — 실제로 겪은 실패 모드).
+    folder = _watch_folder()
+    try:
+        os.makedirs(folder, exist_ok=True)
+        driver.execute_cdp_cmd("Page.setDownloadBehavior",
+                               {"behavior": "allow", "downloadPath": folder})
+        log(f"[OK] 크롬 다운로드 위치를 감시 폴더로 지정: {folder}")
+    except Exception as e:
+        # CDP가 막혀도 매크로 자체는 돌아가야 한다 — 대신 어긋날 수 있음을 알린다.
+        log(f"[WARN] 다운로드 위치를 자동 지정하지 못했습니다: {type(e).__name__}: {e}")
+        log(f"       크롬 설정(chrome://settings/downloads)에서 직접 {folder} 로 맞춰주세요.")
+    return driver
 
 
 def run_forever():

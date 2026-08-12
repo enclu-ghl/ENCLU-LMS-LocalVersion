@@ -361,9 +361,19 @@ class MacroLauncherApp:
             return
 
         self._append_log("매크로 중지 요청...", "warn")
+        # ⚠️ CTRL_C_EVENT는 자식이 CREATE_NEW_PROCESS_GROUP으로 생성됐을 때만 먹는다.
+        #    여기 자식은 그렇지 않아 항상 실패했고, except가 그걸 삼켜 조용히 kill()로
+        #    떨어졌다 — '얌전한 종료'는 한 번도 일어난 적이 없다.
+        #    게다가 kill()은 onefile 부트로더만 죽여서 실제 매크로와 chromedriver가
+        #    살아남는다. 시작/중지를 반복할수록 chromedriver가 쌓인다.
+        #    트리째(/T) 정리하는 쪽으로 통일한다.
         try:
             if sys.platform == "win32":
-                self._macro_proc.send_signal(signal.CTRL_C_EVENT)
+                subprocess.run(
+                    ["taskkill", "/PID", str(self._macro_proc.pid), "/T", "/F"],
+                    capture_output=True, timeout=10,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
             else:
                 self._macro_proc.terminate()
         except Exception:
@@ -371,6 +381,12 @@ class MacroLauncherApp:
                 self._macro_proc.kill()
             except Exception:
                 pass
+        # 리더 스레드가 파이프에 묶여 영영 안 돌아오는 걸 막는다
+        try:
+            if self._macro_proc.stdout:
+                self._macro_proc.stdout.close()
+        except Exception:
+            pass
 
         self._running = False
         self._update_buttons()

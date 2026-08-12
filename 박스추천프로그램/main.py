@@ -70,8 +70,29 @@ def get_db_engine():
         )
         return _DB_ENGINE
     except Exception as e:
-        print(f"DB Engine Error: {e}")
+        _db_error("DB 엔진 생성", e)
         return None
+
+
+# ⚠️ 콘솔 없는 exe(통합 시스템) 안에서는 sys.stdout이 None이라 print가 아무 일도
+#    하지 않는다. 그래서 DB 오류가 전부 사라지고, 화면에는 "목록이 비어 있음"이나
+#    "전 건 매칭실패"만 보인다 — 틀린 결과가 성공처럼 나온다.
+#    마지막 오류를 남겨두고, 결과가 이상할 때 사용자에게 이유를 보여준다.
+_LAST_DB_ERROR = None
+
+
+def _db_error(where, exc):
+    global _LAST_DB_ERROR
+    _LAST_DB_ERROR = f"{where}: {type(exc).__name__}: {exc}"
+    try:
+        print(_LAST_DB_ERROR)
+    except Exception:
+        pass
+
+
+def db_error_text():
+    """마지막 DB 오류 (없으면 None)."""
+    return _LAST_DB_ERROR
 
 # -----------------------------------------------------------------------------
 # 3. 데이터베이스 CRUD 헬퍼 함수
@@ -86,7 +107,7 @@ def load_combination_boxes():
             for _, row in df.iterrows():
                 combos[str(row['combo_key'])] = str(row['box_name'])
     except SQLAlchemyError as e:
-        print(f"Error loading combos: {e}")
+        _db_error("조합 목록 조회", e)
     return combos
 
 def save_or_update_combo(combo_key, box_name):
@@ -102,7 +123,7 @@ def save_or_update_combo(combo_key, box_name):
             """)
             conn.execute(sql, {"key": combo_key, "name": box_name})
     except SQLAlchemyError as e:
-        print(f"Error saving combo: {e}")
+        _db_error("조합 저장", e)
 
 def delete_combo_from_db(combo_key):
     engine = get_db_engine()
@@ -112,7 +133,7 @@ def delete_combo_from_db(combo_key):
             sql = text("DELETE FROM box_combinations WHERE combo_key = :key;")
             conn.execute(sql, {"key": combo_key})
     except SQLAlchemyError as e:
-        print(f"Error deleting combo: {e}")
+        _db_error("조합 삭제", e)
 
 def load_products():
     products = {}
@@ -124,7 +145,7 @@ def load_products():
             for _, row in df.iterrows():
                 products[str(row['product_code'])] = (float(row['width']), float(row['depth']), float(row['height']))
     except SQLAlchemyError as e:
-        print(f"Error loading products: {e}")
+        _db_error("상품 목록 조회", e)
     return products
 
 def save_or_update_product(code, dims):
@@ -140,7 +161,7 @@ def save_or_update_product(code, dims):
             """)
             conn.execute(sql, {"code": code, "w": dims[0], "d": dims[1], "h": dims[2]})
     except SQLAlchemyError as e:
-        print(f"Error saving product: {e}")
+        _db_error("상품 저장", e)
 
 def delete_product_from_db(code):
     engine = get_db_engine()
@@ -149,7 +170,7 @@ def delete_product_from_db(code):
         with engine.begin() as conn:
             conn.execute(text("DELETE FROM products WHERE product_code = :code;"), {"code": code})
     except SQLAlchemyError as e:
-        print(f"Error deleting product: {e}")
+        _db_error("상품 삭제", e)
 
 # -----------------------------------------------------------------------------
 # 4. 박스 크기 연산 알고리즘 (Best-Fit 3D Bin Packing - 위로 쌓기 최적화)
@@ -274,11 +295,24 @@ class IntegratedBoxApp:
         self.notebook = ttk.Notebook(root)
         self.notebook.pack(fill="both", expand=True)
         
-        self.create_tab1()  
-        self.create_tab2()  
-        self.create_tab3()  
-        self.create_tab4()  
-        self.create_tab5()  
+        self.create_tab1()
+        self.create_tab2()
+        self.create_tab3()
+        self.create_tab4()
+        self.create_tab5()
+
+        # DB 조회가 실패했는데 창은 멀쩡히 뜬 경우를 알린다.
+        # 이걸 안 알리면 목록이 빈 채로 열리고, 1번 탭은 전 건 "매칭실패"로
+        # 결과 파일까지 정상 생성된다 — 틀린 결과가 성공처럼 나온다.
+        err = db_error_text()
+        if err:
+            messagebox.showwarning(
+                "DB 조회 실패",
+                "데이터베이스에서 상품/조합 목록을 가져오지 못했습니다.\n"
+                "이 상태로 1번 탭을 돌리면 전 건이 '매칭실패'로 나옵니다.\n\n"
+                f"{err}\n\n"
+                "사내망 접속과 접속정보를 확인해주세요.",
+            )
 
     def create_tab1(self):
         tab1 = tk.Frame(self.notebook, bg="#f5f5f5")
@@ -309,7 +343,15 @@ class IntegratedBoxApp:
 
     def handle_dropped_excel(self, event):
         raw_data = event.data
-        files = [f.strip('{}').strip('"') for f in (raw_data.split('} {') if raw_data.startswith('{') else raw_data.split())]
+        # tkdnd는 경로에 공백이 있으면 중괄호로 감싸 준다.
+        # 직접 '} {' 로 쪼개면 "파일 하나만 공백이 있는" 경우를 못 나눈다
+        # (예: "{C:/../송장 출력.pdf} C:/../결과.txt" -> 한 덩어리로 남음).
+        # Tcl 리스트 분해를 그대로 쓰면 정확히 나뉜다.
+        try:
+            files = list(self.root.tk.splitlist(raw_data))
+        except Exception:
+            files = [f.strip('{}').strip('"') for f in
+                     (raw_data.split('} {') if raw_data.startswith('{') else raw_data.split())]
         for file_path in files:
             ext = os.path.splitext(file_path)[-1].lower()
             if ext in ['.xls', '.xlsx']:
@@ -435,7 +477,15 @@ class IntegratedBoxApp:
 
     def handle_dropped_files(self, event):
         raw_data = event.data
-        files = [f.strip('{}').strip('"') for f in (raw_data.split('} {') if raw_data.startswith('{') else raw_data.split())]
+        # tkdnd는 경로에 공백이 있으면 중괄호로 감싸 준다.
+        # 직접 '} {' 로 쪼개면 "파일 하나만 공백이 있는" 경우를 못 나눈다
+        # (예: "{C:/../송장 출력.pdf} C:/../결과.txt" -> 한 덩어리로 남음).
+        # Tcl 리스트 분해를 그대로 쓰면 정확히 나뉜다.
+        try:
+            files = list(self.root.tk.splitlist(raw_data))
+        except Exception:
+            files = [f.strip('{}').strip('"') for f in
+                     (raw_data.split('} {') if raw_data.startswith('{') else raw_data.split())]
         for file_path in files:
             ext = os.path.splitext(file_path)[-1].lower()
             if ext == '.pdf': self.dropped_pdf = file_path
