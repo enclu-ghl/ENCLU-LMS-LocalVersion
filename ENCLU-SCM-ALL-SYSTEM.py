@@ -130,6 +130,16 @@ APPS = [
         "mode": "coming_soon",
     },
     {
+        "key": "stock_alloc",
+        "title": "재고할당\n수량 공유",
+        "desc": "재고할당 데이터를 웹으로 공유 ·\n수량 작성 후 전산 반영",
+        "icon": "🧮",
+        "badge_color": "#757575",
+        "badge_bg": "#F5F5F5",
+        "status_text": "개발 예정",
+        "mode": "coming_soon",
+    },
+    {
         "key": "oms_invoice",
         "title": "OMS 송장 출력\n제작 프로그램",
         "desc": "OMS 주문 데이터 ·\n송장 출력물 제작",
