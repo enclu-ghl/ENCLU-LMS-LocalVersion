@@ -35,9 +35,11 @@ VERSION = paths.read_version()
 # 웹 시스템 URL (재고조사 / 무게구간 계산 / UPH 현황판 — 같은 앱, 쿼리파라미터로 바로 진입)
 WEB_BASE_URL = "https://inventory-check-st2nrle3vdoyeqgb7hqitj.streamlit.app/"
 WEB_URLS = {
-    "inventory_web": f"{WEB_BASE_URL}?system=inventory",
-    "weight_web":    f"{WEB_BASE_URL}?system=weight",
-    "uph_web":       f"{WEB_BASE_URL}?system=uph",
+    "inventory_web":  f"{WEB_BASE_URL}?system=inventory",
+    "weight_web":     f"{WEB_BASE_URL}?system=weight",
+    "uph_web":        f"{WEB_BASE_URL}?system=uph",
+    "supplies_mgmt":  f"{WEB_BASE_URL}?system=equipment",
+    "stock_alloc":    f"{WEB_BASE_URL}?system=alloc",
 }
 
 # 업무 프로그램은 더 이상 subprocess로 외부 .py를 실행하지 않는다.
@@ -132,12 +134,12 @@ APPS = [
     {
         "key": "stock_alloc",
         "title": "재고할당\n수량 공유",
-        "desc": "재고할당 데이터를 웹으로 공유 ·\n수량 작성 후 전산 반영",
+        "desc": "WMS 업로드 · 동별 수량 작성 ·\n확정 후 이동 파일 생성 (웹)",
         "icon": "🧮",
-        "badge_color": "#757575",
-        "badge_bg": "#F5F5F5",
-        "status_text": "개발 예정",
-        "mode": "coming_soon",
+        "badge_color": "#2E7D32",
+        "badge_bg": "#E8F5E9",
+        "status_text": "브라우저에서 열림",
+        "mode": "web",
     },
     {
         "key": "oms_invoice",
@@ -151,13 +153,13 @@ APPS = [
     },
     {
         "key": "supplies_mgmt",
-        "title": "소모품 데이터\n작성 및 보관 분석",
-        "desc": "소모품 사용/재고 데이터 ·\n작성 및 분석",
+        "title": "비품/소모품\n관리 · 분석",
+        "desc": "주기 체크로 사용량 자동 계산 ·\n소진 예상 · 발주 목록 (웹)",
         "icon": "🧻",
-        "badge_color": "#757575",
-        "badge_bg": "#F5F5F5",
-        "status_text": "개발 예정",
-        "mode": "coming_soon",
+        "badge_color": "#2E7D32",
+        "badge_bg": "#E8F5E9",
+        "status_text": "브라우저에서 열림",
+        "mode": "web",
     },
 ]
 
