@@ -277,14 +277,21 @@ def load_batch_usage_log(limit=100):
 
 
 def append_batch_usage_log(entries):
+    """반환: 방금 남긴 로그의 id 목록.
+    저장이 실패했을 때 이 id들로 revert_batch_usage를 불러 차감을 되돌린다."""
     if not entries:
-        return
+        return []
+    ids = []
     with get_engine().begin() as conn:
         for e in entries:
-            conn.execute(text("""
+            row = conn.execute(text("""
                 INSERT INTO fs_batch_usage_log (brand, code, used_qty)
                 VALUES (:brand, :code, :qty)
-            """), {"brand": e["brand"], "code": e["code"], "qty": e["used_qty"]})
+                RETURNING id
+            """), {"brand": e["brand"], "code": e["code"], "qty": e["used_qty"]}).fetchone()
+            if row:
+                ids.append(row.id)
+    return ids
 
 
 def revert_batch_usage(log_id):
@@ -1857,6 +1864,54 @@ class OrderTab(ttk.Frame):
             self.status_label.config(text=status_text)
         self.after(0, _do)
 
+    def _check_output_writable(self, output_folder, date_str, brand):
+        """일괄 차감 전에 결과 파일들을 실제로 쓸 수 있는지 확인한다.
+        반환: 못 쓰는 파일 이름 목록 (비어 있으면 이상 없음).
+
+        엑셀로 열어둔 파일은 열려 있어도 읽기는 되므로, 'a' 모드로 실제로 열어봐야 걸린다.
+        폴더 자체를 못 쓰는 경우도 같이 잡는다."""
+        blocked = []
+        try:
+            os.makedirs(output_folder, exist_ok=True)
+        except Exception as e:
+            return [f"{output_folder} (폴더를 만들 수 없음: {e})"]
+
+        probe = os.path.join(output_folder, f".~write_test_{os.getpid()}.tmp")
+        try:
+            with open(probe, "w"):
+                pass
+            os.remove(probe)
+        except Exception as e:
+            return [f"{output_folder} (폴더에 쓸 수 없음: {e})"]
+
+        for label in ("합포", "일괄", "싱글", "단품"):
+            path = os.path.join(output_folder, f"{date_str}_{brand}_{label}.xlsx")
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path, "a"):
+                    pass
+            except Exception:
+                blocked.append(os.path.basename(path))
+        return blocked
+
+    def _revert_usage(self, log_ids):
+        """저장 실패로 되돌려야 하는 일괄 차감을 원복한다."""
+        ok = 0
+        for log_id in log_ids:
+            try:
+                done, msg = revert_batch_usage(log_id)
+                if done:
+                    ok += 1
+                    self.log(f"    [차감 원복] {msg}")
+                else:
+                    self.log(f"    ⚠️ 차감 원복 실패(log id {log_id}): {msg}")
+            except Exception as e:
+                self.log(f"    ⚠️ 차감 원복 중 오류(log id {log_id}): {e}")
+        self.log(f"↩️ 저장 실패로 일괄 차감 {ok}/{len(log_ids)}건을 되돌렸습니다.")
+        self.after(0, self.refresh_batch_status)
+        self.after(0, self.app.refresh_batch_tab)
+
     def _run_process_worker(self, platform, brand, mode, input_path, output_folder, input_path2=""):
         try:
             if platform == "라쿠텐":
@@ -1977,6 +2032,26 @@ class OrderTab(ttk.Frame):
             else:
                 # 모드2~6: 합포/일괄/싱글/단품으로 분류해서 각각 파일로 저장
                 single_threshold = self.single_threshold_var.get()
+
+                # 일괄 차감은 파일을 쓰기 전에 일어나기 때문에, 저장이 실패하면 코드만 날아간다.
+                # 실제로 가장 흔한 실패는 '같은 이름의 파일을 엑셀로 열어둔 상태'다 —
+                # 차감하기 전에 미리 쓸 수 있는지 확인해서, 아예 시작을 막는다.
+                if mode in MODES_NEED_BATCH:
+                    locked = self._check_output_writable(output_folder, date_str, brand)
+                    if locked:
+                        self.log("❌ 저장할 파일이 열려 있어 실행을 중단합니다 (일괄코드는 차감되지 않았습니다):")
+                        for f in locked:
+                            self.log(f"    - {f}")
+                        self.after(0, lambda: messagebox.showerror(
+                            "파일이 열려 있음 — 실행 중단",
+                            "아래 파일이 다른 프로그램(엑셀 등)에서 열려 있어 저장할 수 없습니다.\n\n"
+                            + "\n".join(locked)
+                            + "\n\n닫은 뒤 다시 실행해주세요.\n"
+                              "일괄코드는 차감되지 않았습니다."
+                        ))
+                        self._finish_run("🔴 오류 — 파일 닫고 재실행")
+                        return
+
                 consume_fn = consume_batch_codes_atomic if mode in MODES_NEED_BATCH else None
                 result, class_logs, usage_log = classify_orders(
                     df_cleaned, mode, single_threshold, consume_fn=consume_fn
@@ -1984,6 +2059,7 @@ class OrderTab(ttk.Frame):
                 for line in class_logs:
                     self.log(f"    {line}")
 
+                usage_log_ids = []
                 if mode in MODES_NEED_BATCH:
                     if usage_log:
                         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1991,7 +2067,7 @@ class OrderTab(ttk.Frame):
                             {"date": now_str, "brand": brand, "code": u["code"], "used_qty": u["used_qty"]}
                             for u in usage_log
                         ]
-                        append_batch_usage_log(log_entries)
+                        usage_log_ids = append_batch_usage_log(log_entries)
                         for u in usage_log:
                             self.log(f"    [일괄 소진] {u['code']}: {u['used_qty']}개 차감 (브랜드: {brand})")
                     self.after(0, self.refresh_batch_status)
@@ -1999,15 +2075,21 @@ class OrderTab(ttk.Frame):
                     self.log("일괄코드 DB 갱신 완료 (소진된 코드는 자동 제외됨)")
 
                 saved_paths = []
-                for label, df_part in result.items():
-                    if df_part.empty:
-                        self.log(f"    ({label}: 0건이라 저장 생략)")
-                        continue
-                    out_name = f"{date_str}_{brand}_{label}.xlsx"
-                    out_path = os.path.join(output_folder, out_name)
-                    df_part.to_excel(out_path, index=False, engine="xlsxwriter")
-                    saved_paths.append(out_path)
-                    self.log(f"✅ 저장 완료 ({label}, {len(df_part):,}행): {out_path}")
+                try:
+                    for label, df_part in result.items():
+                        if df_part.empty:
+                            self.log(f"    ({label}: 0건이라 저장 생략)")
+                            continue
+                        out_name = f"{date_str}_{brand}_{label}.xlsx"
+                        out_path = os.path.join(output_folder, out_name)
+                        df_part.to_excel(out_path, index=False, engine="xlsxwriter")
+                        saved_paths.append(out_path)
+                        self.log(f"✅ 저장 완료 ({label}, {len(df_part):,}행): {out_path}")
+                except Exception:
+                    # 파일을 못 썼는데 코드만 차감된 상태로 두면 안 된다 — 차감을 되돌린다.
+                    if usage_log_ids:
+                        self._revert_usage(usage_log_ids)
+                    raise
 
                 self.after(0, lambda: messagebox.showinfo(
                     "완료",
