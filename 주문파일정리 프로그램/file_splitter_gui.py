@@ -34,7 +34,10 @@ import re
 import traceback
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+
+# DB의 occurred_at은 TIMESTAMPTZ(UTC)로 돌아온다. 화면·엑셀에 찍을 땐 반드시 KST로 바꾼다.
+KST_TZ = timezone(timedelta(hours=9))
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
@@ -274,6 +277,44 @@ def load_batch_usage_log(limit=100):
         rows = conn.execute(text(query), params).fetchall()
     return [{"id": r.id, "date": r.occurred_at.strftime("%Y-%m-%d %H:%M:%S"), "brand": r.brand,
               "code": r.code, "used_qty": r.used_qty, "reverted": r.reverted} for r in rows]
+
+
+def load_batch_usage_period(date_from, date_to, include_reverted=False):
+    """기간별 소진 내역. date_from/date_to는 'YYYY-MM-DD' 문자열.
+
+    ⚠️ occurred_at은 TIMESTAMPTZ(UTC 저장)라, 그냥 날짜로 자르면 한국 기준 하루와
+    9시간 어긋난다. 반드시 KST로 바꾼 뒤 날짜를 비교한다.
+
+    되돌린 건(reverted)은 실제로 빠져나가지 않은 것이므로 기본적으로 제외한다 —
+    '얼마나 나갔나'를 보는 표에 섞이면 숫자가 틀린다.
+
+    현재 남은수량을 함께 붙여준다(보충 판단에 바로 쓰라고). 코드가 이미 삭제됐으면 None.
+    """
+    query = """
+        SELECT u.id, u.occurred_at, u.brand, u.code, u.used_qty, u.reverted,
+               c.product_name, c.gift, c.remaining_qty
+        FROM fs_batch_usage_log u
+        LEFT JOIN fs_batch_codes c ON c.code = u.code
+        WHERE (u.occurred_at AT TIME ZONE 'Asia/Seoul')::date BETWEEN :d1 AND :d2
+    """
+    if not include_reverted:
+        query += " AND NOT u.reverted"
+    query += " ORDER BY u.occurred_at, u.id"
+
+    with get_engine().connect() as conn:
+        rows = conn.execute(text(query), {"d1": date_from, "d2": date_to}).fetchall()
+
+    return [{
+        "id": r.id,
+        "date": r.occurred_at.astimezone(KST_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+        "brand": r.brand,
+        "code": r.code,
+        "used_qty": int(r.used_qty or 0),
+        "reverted": r.reverted,
+        "product_name": r.product_name or "",
+        "gift": r.gift or "",
+        "remaining_qty": None if r.remaining_qty is None else int(r.remaining_qty),
+    } for r in rows]
 
 
 def append_batch_usage_log(entries):
@@ -1127,10 +1168,51 @@ class BatchTab(ttk.Frame):
         self.log_tree.config(yscrollcommand=log_scroll.set)
 
         ttk.Button(self, text="↩️ 선택 소진 되돌리기", command=self.revert_selected_usage).pack(fill="x", pady=(4, 0))
-        ttk.Button(self, text="📥 소진 로그 엑셀 다운로드 (전체)", command=self.export_usage_log).pack(fill="x", pady=(4, 0))
+
+        # ── 기간별 소진 내역 다운로드 ──
+        # 매일 찢기가 끝나면 "오늘 얼마나 빠져나갔나"를 받아보는 용도라 기본값을 오늘로 맞춘다.
+        today_str = datetime.now(KST_TZ).strftime("%Y-%m-%d")
+        ttk.Label(self, text="📅 기간별 소진 내역 (되돌린 건 제외)",
+                  font=("맑은 고딕", 10, "bold")).pack(anchor="w", pady=(14, 4))
+
+        period_row = ttk.Frame(self)
+        period_row.pack(fill="x")
+        ttk.Label(period_row, text="시작일", width=6).pack(side="left")
+        self.usage_from_var = tk.StringVar(value=today_str)
+        ttk.Entry(period_row, textvariable=self.usage_from_var, width=12).pack(side="left", padx=(0, 8))
+        ttk.Label(period_row, text="종료일", width=6).pack(side="left")
+        self.usage_to_var = tk.StringVar(value=today_str)
+        ttk.Entry(period_row, textvariable=self.usage_to_var, width=12).pack(side="left")
+
+        quick_row = ttk.Frame(self)
+        quick_row.pack(fill="x", pady=(4, 0))
+        ttk.Button(quick_row, text="오늘", width=8,
+                   command=lambda: self._set_usage_period(0, 0)).pack(side="left", padx=(0, 4))
+        ttk.Button(quick_row, text="어제", width=8,
+                   command=lambda: self._set_usage_period(1, 1)).pack(side="left", padx=(0, 4))
+        ttk.Button(quick_row, text="최근 7일", width=8,
+                   command=lambda: self._set_usage_period(6, 0)).pack(side="left", padx=(0, 4))
+        ttk.Button(quick_row, text="이번 달", width=8,
+                   command=self._set_usage_this_month).pack(side="left")
+
+        ttk.Button(self, text="📥 기간 소진 내역 엑셀 다운로드 (요약 + 상세)",
+                   command=self.export_usage_period).pack(fill="x", pady=(4, 0))
+        ttk.Button(self, text="📥 소진 로그 엑셀 다운로드 (전체)",
+                   command=self.export_usage_log).pack(fill="x", pady=(2, 0))
 
         self.refresh()
         self._poll()
+
+    def _set_usage_period(self, days_back_from, days_back_to):
+        """빠른 기간 선택. 오늘=(0,0), 어제=(1,1), 최근7일=(6,0)"""
+        now = datetime.now(KST_TZ)
+        self.usage_from_var.set((now - timedelta(days=days_back_from)).strftime("%Y-%m-%d"))
+        self.usage_to_var.set((now - timedelta(days=days_back_to)).strftime("%Y-%m-%d"))
+
+    def _set_usage_this_month(self):
+        now = datetime.now(KST_TZ)
+        self.usage_from_var.set(now.replace(day=1).strftime("%Y-%m-%d"))
+        self.usage_to_var.set(now.strftime("%Y-%m-%d"))
 
     def _poll(self):
         self.refresh()
@@ -1196,6 +1278,89 @@ class BatchTab(ttk.Frame):
 
         self.refresh()
         self.on_change()
+
+    def export_usage_period(self):
+        """기간 소진 내역을 엑셀로. 요약(코드별 합계) + 상세(원본 행) 2시트."""
+        d1 = self.usage_from_var.get().strip()
+        d2 = self.usage_to_var.get().strip()
+
+        for label, value in (("시작일", d1), ("종료일", d2)):
+            try:
+                datetime.strptime(value, "%Y-%m-%d")
+            except ValueError:
+                messagebox.showwarning("날짜 형식 오류",
+                                       f"{label}이 올바르지 않습니다: '{value}'\n\nYYYY-MM-DD 형식으로 넣어주세요.")
+                return
+        if d1 > d2:
+            messagebox.showwarning("기간 오류", "시작일이 종료일보다 늦습니다.")
+            return
+
+        try:
+            rows = load_batch_usage_period(d1, d2)
+        except Exception as e:
+            messagebox.showerror("DB 오류", f"소진 내역 조회 실패:\n{e}")
+            return
+
+        if not rows:
+            messagebox.showinfo("내역 없음",
+                                f"{d1} ~ {d2} 기간에 소진된 일괄코드가 없습니다.\n"
+                                "(되돌린 건은 집계에서 제외됩니다)")
+            return
+
+        df = pd.DataFrame(rows)
+
+        # ── 요약: 코드별 합계 ──
+        summary = (df.groupby(["code", "product_name", "gift"], dropna=False)
+                     .agg(소진수량=("used_qty", "sum"), 건수=("id", "count"))
+                     .reset_index())
+        # 현재 남은수량은 코드당 하나뿐이라 첫 값을 붙인다
+        remain = df.groupby("code")["remaining_qty"].first()
+        summary["현재 남은수량"] = summary["code"].map(remain)
+        summary = summary.rename(columns={
+            "code": "옵션코드", "product_name": "상품명", "gift": "사은품"})
+        summary = summary[["옵션코드", "상품명", "사은품", "소진수량", "건수", "현재 남은수량"]]
+        summary = summary.sort_values("소진수량", ascending=False)
+
+        # ── 상세: 원본 행 ──
+        detail = df.rename(columns={
+            "date": "일시", "brand": "브랜드", "code": "옵션코드",
+            "product_name": "상품명", "gift": "사은품",
+            "used_qty": "소진수량", "remaining_qty": "현재 남은수량"})
+        detail = detail[["일시", "브랜드", "옵션코드", "상품명", "사은품", "소진수량", "현재 남은수량"]]
+
+        total_qty = int(summary["소진수량"].sum())
+        same_day = (d1 == d2)
+        default_name = (f"일괄소진_{d1.replace('-', '')}.xlsx" if same_day
+                        else f"일괄소진_{d1.replace('-', '')}-{d2.replace('-', '')}.xlsx")
+
+        path = filedialog.asksaveasfilename(
+            title="기간 소진 내역 저장 위치",
+            defaultextension=".xlsx",
+            initialfile=default_name,
+            filetypes=[("엑셀 파일", "*.xlsx")]
+        )
+        if not path:
+            return
+
+        try:
+            with pd.ExcelWriter(path, engine="xlsxwriter") as writer:
+                summary.to_excel(writer, sheet_name="요약", index=False)
+                detail.to_excel(writer, sheet_name="상세", index=False)
+        except PermissionError:
+            messagebox.showerror("저장 오류",
+                                 "같은 이름의 파일이 엑셀에서 열려 있습니다.\n닫은 뒤 다시 시도해주세요.")
+            return
+        except Exception as e:
+            messagebox.showerror("저장 오류", f"엑셀 저장 실패:\n{e}")
+            return
+
+        messagebox.showinfo(
+            "저장 완료",
+            f"{d1} ~ {d2}\n\n"
+            f"총 소진수량: {total_qty:,}개\n"
+            f"옵션코드 {len(summary):,}종 · 소진 건수 {len(detail):,}건\n\n"
+            f"저장 위치: {path}"
+        )
 
     def export_usage_log(self):
         try:
