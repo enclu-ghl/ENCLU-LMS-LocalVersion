@@ -503,7 +503,8 @@ def push_to_db(engine, rows, chunk_size=2000):
             dong = EXCLUDED.dong,
             invoice_no = EXCLUDED.invoice_no,
             quantity = EXCLUDED.quantity,
-            extra_data = EXCLUDED.extra_data
+            extra_data = EXCLUDED.extra_data,
+            detected_at = EXCLUDED.detected_at
     """
     # invoice_datetime / delivery_datetime / detected_at / extra_data 캐스팅 명시
     template = "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)"
