@@ -522,6 +522,67 @@ def push_to_db(engine, rows, chunk_size=2000):
         raw_conn.close()
 
 
+# ══════════════════════════════════════════════════════════════
+# SKU별 일별 출고 요약 (재고보충계획용 수요 데이터)
+# ══════════════════════════════════════════════════════════════
+# order_status_log는 용량 관리 정책상 2개월 뒤 원본이 지워진다. 그 전에
+# 상품코드(옵션명)별 하루 출고량만 미리 요약해서 sku_daily_shipment에 남겨두면,
+# 원본이 사라져도 수요 예측에 쓸 이력은 계속 쌓인다.
+NOT_CANCELLED_SQL_WD = "cs_status NOT IN (" + ", ".join(f"'{v}'" for v in CANCELLED_CS_VALUES) + ")"
+
+SKU_AGG_INTERVAL_SEC = int(os.getenv("UPH_SKU_AGG_INTERVAL_SEC", "600"))   # 10분마다
+SKU_AGG_LOOKBACK_DAYS = 3   # 늦게 들어오는 배송확정 반영— 최근 며칠은 계속 다시 계산
+
+
+def build_sku_daily_shipment(engine, date_from, date_to, chunk_size=2000):
+    """[date_from, date_to] 구간(KST 날짜)을 상품코드별로 다시 집계해서 upsert.
+    같은 구간을 몇 번 다시 돌려도 결과가 같다(멱등) — 그래서 최근 며칠을 매번
+    재계산해도 안전하다.
+
+    push_to_db와 같은 방식(execute_values 일괄 upsert)을 쓴다 — 이 함수는 watchdog
+    메인 루프에서 10분마다 불리므로, 행 하나씩 왕복하면 그만큼 감시가 지연된다."""
+    query = f"""
+        SELECT (delivery_datetime AT TIME ZONE 'Asia/Seoul')::date AS work_date,
+               COALESCE(NULLIF(extra_data->>'옵션명', ''), 'UNKNOWN') AS product_code,
+               MAX(product_name) AS product_name,
+               SUM(quantity) AS shipped_qty,
+               COUNT(DISTINCT invoice_no) AS order_count
+        FROM order_status_log
+        WHERE status='배송' AND {NOT_CANCELLED_SQL_WD}
+          AND delivery_datetime IS NOT NULL
+          AND (delivery_datetime AT TIME ZONE 'Asia/Seoul')::date BETWEEN :d1 AND :d2
+        GROUP BY 1, 2
+    """
+    with engine.connect() as conn:
+        rows = conn.execute(text(query), {"d1": date_from, "d2": date_to}).fetchall()
+    if not rows:
+        return 0
+
+    sql = """
+        INSERT INTO sku_daily_shipment
+            (work_date, product_code, product_name, shipped_qty, order_count, updated_at)
+        VALUES %s
+        ON CONFLICT (work_date, product_code) DO UPDATE SET
+            product_name = EXCLUDED.product_name,
+            shipped_qty  = EXCLUDED.shipped_qty,
+            order_count  = EXCLUDED.order_count,
+            updated_at   = now()
+    """
+    template = "(%s, %s, %s, %s, %s, now())"
+    values = [(r.work_date, r.product_code, r.product_name or "",
+               int(r.shipped_qty or 0), int(r.order_count or 0)) for r in rows]
+
+    raw_conn = engine.raw_connection()
+    try:
+        cur = raw_conn.cursor()
+        for i in range(0, len(values), chunk_size):
+            execute_values(cur, sql, values[i:i + chunk_size], template=template, page_size=chunk_size)
+        raw_conn.commit()
+    finally:
+        raw_conn.close()
+    return len(rows)
+
+
 def cleanup_old_downloads(folder, keep_n=KEEP_LATEST_FILES):
     """감시폴더에 WMS 다운로드 파일이 계속 쌓이는 것을 방지 — 수정시각(mtime) 기준
     최신 keep_n개만 남기고 나머지는 삭제한다. 이미 처리(diffing)까지 끝난 파일들이라
@@ -606,6 +667,7 @@ def main():
     # 이러면 감시가 멈추는 실패 모드 자체가 없고, 밀렸을 때도 중간 파일을 건너뛰고 최신 것으로
     # 바로 따라잡는다.
     last_processed = None
+    last_sku_agg = 0.0
     try:
         while True:
             try:
@@ -616,6 +678,18 @@ def main():
                     last_processed = latest
             except Exception:
                 log.exception("파일 처리 중 예외 발생 (감시는 계속 유지됨)")
+
+            # SKU별 일별 출고 요약 — 재고보충계획용 수요 데이터가 계속 쌓이도록 주기적으로 재계산
+            if time.time() - last_sku_agg >= SKU_AGG_INTERVAL_SEC:
+                try:
+                    today_kst = datetime.now(KST).date()
+                    d_from = today_kst - timedelta(days=SKU_AGG_LOOKBACK_DAYS)
+                    n = build_sku_daily_shipment(engine, d_from, today_kst)
+                    log.info(f"SKU별 일별 출고 요약 갱신: {d_from} ~ {today_kst} ({n}건)")
+                except Exception:
+                    log.exception("SKU별 일별 출고 요약 갱신 실패 (감시는 계속 유지됨)")
+                last_sku_agg = time.time()
+
             time.sleep(POLL_INTERVAL_SEC)
     except KeyboardInterrupt:
         log.info("에이전트 종료 요청 받음")
