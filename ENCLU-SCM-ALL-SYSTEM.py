@@ -122,16 +122,6 @@ APPS = [
         "mode": "subprocess",
     },
     {
-        "key": "sichaek_verify",
-        "title": "시책 검증\n프로그램",
-        "desc": "WMS · OMS 사은품 적용 대조 ·\n업체별 · 시책별 불일치 검출",
-        "icon": "🎁",
-        "badge_color": "#757575",
-        "badge_bg": "#F5F5F5",
-        "status_text": "개발 예정",
-        "mode": "coming_soon",
-    },
-    {
         "key": "stock_alloc",
         "title": "재고할당\n수량 공유",
         "desc": "WMS 업로드 · 동별 수량 작성 ·\n확정 후 이동 파일 생성 (웹)",
