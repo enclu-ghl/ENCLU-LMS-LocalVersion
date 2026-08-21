@@ -30,8 +30,8 @@ CHROME_PATHS = [
 CHROME_EXE = next((p for p in CHROME_PATHS if p and os.path.exists(p)), CHROME_PATHS[0])
 CHROME_CMD = [
     CHROME_EXE,
-    "--remote-debugging-port=9222",
-    '--user-data-dir=C:\\chrome-debug-profile'
+    "--remote-debugging-port=9224",
+    '--user-data-dir=C:\\chrome-debug-profile-macro'
 ]
 
 # ── Python 인터프리터: 가상환경(venv) 우선, 없으면 현재 인터프리터 ──

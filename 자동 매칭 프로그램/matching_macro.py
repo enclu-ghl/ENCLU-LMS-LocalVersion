@@ -866,12 +866,12 @@ if __name__ == "__main__":
     if not IS_GUI:
         print("사용 방법:")
         print("  1. Chrome을 디버깅 모드로 먼저 실행하세요:")
-        print('     chrome.exe --remote-debugging-port=9222 --user-data-dir="C:\\chrome-debug-profile"')
+        print('     chrome.exe --remote-debugging-port=9224 --user-data-dir="C:\\chrome-debug-profile-macro"')
         print("  2. 그 Chrome에서 매칭 팝업을 열어둔 상태로 이 스크립트를 실행하세요")
         print()
 
     options = webdriver.ChromeOptions()
-    options.add_experimental_option("debuggerAddress", "127.0.0.1:9222")
+    options.add_experimental_option("debuggerAddress", "127.0.0.1:9224")
     driver = webdriver.Chrome(options=options)
 
     log(f"브라우저 연결됨: {driver.title}")
