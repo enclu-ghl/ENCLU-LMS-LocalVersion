@@ -233,12 +233,23 @@ def wait_until_row_stable(driver, target_text, settle_delay=RESULT_SETTLE_DELAY)
     return find_matching_result_row(driver, target_text, timeout=3)
 
 
-def find_matching_button(driver):
+def find_matching_button(driver, _retried=False):
     check_and_handle_native_alert(driver)
     buttons = safe_find_elements(driver, MATCHING_BTN_SELECTOR)
     for btn in buttons:
         if btn.is_displayed():
             return btn
+
+    # 못 찾은 첫 시도라면, 창이 작아서 반응형 레이아웃으로 버튼이 숨었을 가능성이 있다.
+    # 최대화하고 딱 한 번만 다시 찾아본다(계속 없으면 무한루프 방지를 위해 포기).
+    if not _retried:
+        log("  [WARN] 매칭 버튼을 못 찾음 — 창을 최대화하고 한 번 더 확인합니다")
+        try:
+            driver.maximize_window()
+            time.sleep(0.5)
+        except Exception as e:
+            log(f"  [WARN] 창 최대화 재시도 실패: {e}")
+        return find_matching_button(driver, _retried=True)
     return None
 
 
@@ -873,6 +884,15 @@ if __name__ == "__main__":
     options = webdriver.ChromeOptions()
     options.add_experimental_option("debuggerAddress", "127.0.0.1:9224")
     driver = webdriver.Chrome(options=options)
+
+    # 크롬 창이 작으면 이지어드민이 반응형 레이아웃으로 바뀌면서 '매칭' 버튼이
+    # 화면에 아예 안 그려지거나 숨겨져서, 셀렉터는 맞는데도 매크로가 못 찾고
+    # 멈추는 사고가 실제로 있었다(2026-08-19). 시작할 때 항상 최대화해서 예방한다.
+    try:
+        driver.maximize_window()
+        log("[OK] 크롬 창 최대화 완료")
+    except Exception as e:
+        log(f"[WARN] 크롬 창 최대화 실패(무시하고 진행): {e}")
 
     log(f"브라우저 연결됨: {driver.title}")
 
