@@ -211,25 +211,54 @@ def check_existing_batch_codes(codes):
     return {r.code for r in rows}
 
 
-def bulk_upsert_batch_codes(rows):
+def bulk_upsert_batch_codes(rows, chunk_size=500):
     """엑셀 대량 등록용. rows: [{"code","qty","product_name","gift"}, ...]
     이미 있는 코드면 수량을 더해주고(보충), 상품명/사은품은 새 값이 있으면 그걸로 갱신.
-    반환: (성공 건수, 오류 목록[(행번호,사유)])
-    """
-    ok_count = 0
+    반환: 처리된 행 수(파일 원본 행 기준).
+
+    예전엔 행마다 개별 INSERT를 왕복해서 대량 파일에서 느렸다(과거 다른 화면에서
+    같은 패턴으로 실제 타임아웃이 났음). 청크당 한 번의 다중행 INSERT로 묶되,
+    하나의 트랜잭션 안에서 처리해 원자성(전부 성공 또는 전부 롤백)은 그대로 유지한다.
+
+    ⚠️ 같은 코드가 파일 안에 여러 번 나오면 PostgreSQL의 ON CONFLICT는 한 INSERT
+    문 안에서 같은 행을 두 번 못 건드려 에러가 난다. 그래서 코드별로 먼저 합친다
+    (수량은 합산, 상품명/사은품은 마지막 값 우선) — 예전에 행을 하나씩 순차
+    실행하던 결과와 정확히 동일하다(수량은 어차피 누적됐고, 이름/사은품은
+    나중 행이 앞 행을 덮어썼으므로)."""
+    if not rows:
+        return 0
+
+    merged = {}
+    for r in rows:
+        code = r["code"]
+        m = merged.setdefault(code, {"qty": 0, "product_name": "", "gift": ""})
+        m["qty"] += r["qty"]
+        if r.get("product_name", ""):
+            m["product_name"] = r["product_name"]
+        if r.get("gift", ""):
+            m["gift"] = r["gift"]
+    merged_rows = [{"code": c, **v} for c, v in merged.items()]
+
     with get_engine().begin() as conn:
-        for r in rows:
-            conn.execute(text("""
+        for i in range(0, len(merged_rows), chunk_size):
+            chunk = merged_rows[i:i + chunk_size]
+            values_sql = ", ".join(f"(:code{j}, :qty{j}, :pn{j}, :gift{j})" for j in range(len(chunk)))
+            params = {}
+            for j, r in enumerate(chunk):
+                params[f"code{j}"] = r["code"]
+                params[f"qty{j}"] = r["qty"]
+                params[f"pn{j}"] = r["product_name"]
+                params[f"gift{j}"] = r["gift"]
+            conn.execute(text(f"""
                 INSERT INTO fs_batch_codes (code, remaining_qty, product_name, gift)
-                VALUES (:code, :qty, :pn, :gift)
+                VALUES {values_sql}
                 ON CONFLICT (code) DO UPDATE SET
                     remaining_qty = fs_batch_codes.remaining_qty + EXCLUDED.remaining_qty,
                     product_name = CASE WHEN EXCLUDED.product_name <> '' THEN EXCLUDED.product_name ELSE fs_batch_codes.product_name END,
                     gift = CASE WHEN EXCLUDED.gift <> '' THEN EXCLUDED.gift ELSE fs_batch_codes.gift END,
                     updated_at = NOW()
-            """), {"code": r["code"], "qty": r["qty"], "pn": r.get("product_name", ""), "gift": r.get("gift", "")})
-            ok_count += 1
-    return ok_count
+            """), params)
+    return len(rows)
 
 
 def consume_batch_codes_atomic(needed_counts):
@@ -400,21 +429,38 @@ def delete_all_amazon_urls():
         conn.execute(text("DELETE FROM fs_amazon_url_map"))
 
 
-def bulk_upsert_amazon_urls(rows):
+def bulk_upsert_amazon_urls(rows, chunk_size=500):
     """엑셀 대량 등록용. rows: [{"hscode","asin","url"}, ...]
-    이미 있는 HSCODE면 최신 값으로 덮어씀.
-    """
-    ok_count = 0
+    이미 있는 HSCODE면 최신 값으로 덮어씀. 반환: 처리된 행 수(파일 원본 행 기준).
+
+    청크당 한 번의 다중행 INSERT로 묶어 왕복 수를 줄인다(원자성은 하나의
+    트랜잭션으로 그대로 유지). 같은 hscode가 파일에 여러 번 나오면 한 INSERT
+    문 안에서 ON CONFLICT가 같은 행을 두 번 못 건드리므로, 미리 hscode별로
+    합쳐서(마지막 값이 이김 — 기존 순차 실행과 동일한 결과) 넣는다."""
+    if not rows:
+        return 0
+
+    merged = {}
+    for r in rows:
+        merged[r["hscode"]] = {"asin": r.get("asin", ""), "url": r.get("url", "")}
+    merged_rows = [{"hscode": h, **v} for h, v in merged.items()]
+
     with get_engine().begin() as conn:
-        for r in rows:
-            conn.execute(text("""
+        for i in range(0, len(merged_rows), chunk_size):
+            chunk = merged_rows[i:i + chunk_size]
+            values_sql = ", ".join(f"(:h{j}, :a{j}, :u{j})" for j in range(len(chunk)))
+            params = {}
+            for j, r in enumerate(chunk):
+                params[f"h{j}"] = r["hscode"]
+                params[f"a{j}"] = r["asin"]
+                params[f"u{j}"] = r["url"]
+            conn.execute(text(f"""
                 INSERT INTO fs_amazon_url_map (hscode, asin, url)
-                VALUES (:h, :a, :u)
+                VALUES {values_sql}
                 ON CONFLICT (hscode) DO UPDATE SET
                     asin = EXCLUDED.asin, url = EXCLUDED.url, updated_at = NOW()
-            """), {"h": r["hscode"], "a": r.get("asin", ""), "u": r.get("url", "")})
-            ok_count += 1
-    return ok_count
+            """), params)
+    return len(rows)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -2240,6 +2286,14 @@ class OrderTab(ttk.Frame):
                     self.log("일괄코드 DB 갱신 완료 (소진된 코드는 자동 제외됨)")
 
                 saved_paths = []
+                # 파일이 여러 개(합포/일괄/싱글/단품)인데 그중 하나라도 저장에 실패하면
+                # 실패 시 코드 차감 전체를 되돌린다(_revert_usage) — 그런데 앞선 파일들이
+                # 이미 최종 이름으로 디스크에 남아있으면, 그 파일이 소진한 코드까지 함께
+                # 되돌려져서 "이미 나간 파일은 있는데 코드는 남은 걸로 복구됨" → 같은
+                # 코드가 다음 실행에서 또 나가는 이중소진이 생길 수 있다. 그래서 전부
+                # .tmp로 먼저 쓰고, 전부 성공했을 때만 한꺼번에 최종 이름으로 바꿔서
+                # "부분적으로만 최종 파일이 존재하는" 상태 자체를 없앤다.
+                tmp_entries = []
                 try:
                     for label, df_part in result.items():
                         if df_part.empty:
@@ -2247,10 +2301,21 @@ class OrderTab(ttk.Frame):
                             continue
                         out_name = f"{date_str}_{brand}_{label}.xlsx"
                         out_path = os.path.join(output_folder, out_name)
-                        df_part.to_excel(out_path, index=False, engine="xlsxwriter")
+                        tmp_path = out_path + ".tmp"
+                        df_part.to_excel(tmp_path, index=False, engine="xlsxwriter")
+                        tmp_entries.append((tmp_path, out_path, label, len(df_part)))
+
+                    for tmp_path, out_path, label, row_count in tmp_entries:
+                        os.replace(tmp_path, out_path)
                         saved_paths.append(out_path)
-                        self.log(f"✅ 저장 완료 ({label}, {len(df_part):,}행): {out_path}")
+                        self.log(f"✅ 저장 완료 ({label}, {row_count:,}행): {out_path}")
                 except Exception:
+                    for tmp_path, _, _, _ in tmp_entries:
+                        try:
+                            if os.path.exists(tmp_path):
+                                os.remove(tmp_path)
+                        except Exception:
+                            pass
                     # 파일을 못 썼는데 코드만 차감된 상태로 두면 안 된다 — 차감을 되돌린다.
                     if usage_log_ids:
                         self._revert_usage(usage_log_ids)

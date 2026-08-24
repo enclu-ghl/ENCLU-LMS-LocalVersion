@@ -10,6 +10,7 @@ import pandas as pd
 import fitz  # PyMuPDF
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
+from psycopg2.extras import execute_values
 from tkinterdnd2 import TkinterDnD, DND_FILES
 from dotenv import load_dotenv
 
@@ -130,6 +131,38 @@ def save_or_update_combo(combo_key, box_name):
         _db_error("조합 저장", e)
         return False
 
+def bulk_save_combos(rows, chunk_size=500):
+    """rows: [(combo_key, box_name), ...] 일괄 upsert. 반환: (성공건수, 실패건수).
+    bulk_save_products와 같은 이유로 일괄 처리로 바꿈."""
+    engine = get_db_engine()
+    if not engine or not rows:
+        return 0, len(rows)
+    sql = """
+        INSERT INTO box_combinations (combo_key, box_name, updated_at)
+        VALUES %s
+        ON CONFLICT (combo_key) DO UPDATE SET
+            box_name = EXCLUDED.box_name, updated_at = CURRENT_TIMESTAMP
+    """
+    template = "(%s, %s, CURRENT_TIMESTAMP)"
+    ok = 0
+    raw_conn = engine.raw_connection()
+    try:
+        cur = raw_conn.cursor()
+        for i in range(0, len(rows), chunk_size):
+            chunk = rows[i:i + chunk_size]
+            try:
+                execute_values(cur, sql, chunk, template=template, page_size=chunk_size)
+                raw_conn.commit()
+                ok += len(chunk)
+            except Exception as e:
+                raw_conn.rollback()
+                _db_error(f"조합 일괄 저장 ({i+1}~{i+len(chunk)}행)", e)
+                break
+    finally:
+        raw_conn.close()
+    return ok, len(rows) - ok
+
+
 def delete_combo_from_db(combo_key):
     engine = get_db_engine()
     if not engine: return False
@@ -171,6 +204,43 @@ def save_or_update_product(code, dims):
     except SQLAlchemyError as e:
         _db_error("상품 저장", e)
         return False
+
+def bulk_save_products(rows, chunk_size=500):
+    """rows: [(code, w, d, h), ...] 일괄 upsert. 반환: (성공건수, 실패건수).
+    엑셀 대량 등록이 행 하나마다 개별 INSERT를 왕복해서, 수백~수천 행이면
+    그만큼 느리고 과거 다른 화면에서 실제로 타임아웃까지 냈던 패턴이라 일괄
+    처리로 바꾼다. 청크(500행) 단위로 커밋하므로, 그중 한 청크가 실패하면
+    그 청크 전체(최대 500행)가 실패로 잡힌다 — 개별 행 단위보다는 거칠지만
+    실패 지점은 로그로 남는다."""
+    engine = get_db_engine()
+    if not engine or not rows:
+        return 0, len(rows)
+    sql = """
+        INSERT INTO products (product_code, width, depth, height, updated_at)
+        VALUES %s
+        ON CONFLICT (product_code) DO UPDATE SET
+            width = EXCLUDED.width, depth = EXCLUDED.depth, height = EXCLUDED.height,
+            updated_at = CURRENT_TIMESTAMP
+    """
+    template = "(%s, %s, %s, %s, CURRENT_TIMESTAMP)"
+    ok = 0
+    raw_conn = engine.raw_connection()
+    try:
+        cur = raw_conn.cursor()
+        for i in range(0, len(rows), chunk_size):
+            chunk = rows[i:i + chunk_size]
+            try:
+                execute_values(cur, sql, chunk, template=template, page_size=chunk_size)
+                raw_conn.commit()
+                ok += len(chunk)
+            except Exception as e:
+                raw_conn.rollback()
+                _db_error(f"상품 일괄 저장 ({i+1}~{i+len(chunk)}행)", e)
+                break
+    finally:
+        raw_conn.close()
+    return ok, len(rows) - ok
+
 
 def delete_product_from_db(code):
     engine = get_db_engine()
@@ -394,7 +464,24 @@ class IntegratedBoxApp:
             
             df_order = df_order.dropna(subset=[h_col_name])
             df_order[e_col_name] = df_order[e_col_name].fillna("")
-            df_order[f_col_name] = pd.to_numeric(df_order[f_col_name].fillna(1), errors='coerce').astype(int)
+
+            # 수량 칸에 숫자로 못 바꾸는 값(오타 등)이 하나만 섞여도 .astype(int)가
+            # 예외를 던져서 그날 매칭 전체가 죽었다. 그 행만 건너뛰고 나머지는
+            # 정상 처리하도록 바꾼다 — 무엇을 건너뛰었는지도 화면에 남긴다.
+            df_order[f_col_name] = pd.to_numeric(df_order[f_col_name].fillna(1), errors='coerce')
+            bad_qty = df_order[df_order[f_col_name].isna()]
+            if not bad_qty.empty:
+                preview = "\n".join(
+                    f"  - {h_col_name}={r[h_col_name]}  {e_col_name}={r[e_col_name]}"
+                    for _, r in bad_qty.head(20).iterrows()
+                )
+                more = f"\n  ... 외 {len(bad_qty)-20}건 더" if len(bad_qty) > 20 else ""
+                self.txt_result_excel.insert(
+                    tk.END,
+                    f"\n⚠️ 수량 값이 숫자가 아닌 행 {len(bad_qty)}건을 건너뜁니다:\n{preview}{more}\n"
+                )
+                df_order = df_order.dropna(subset=[f_col_name])
+            df_order[f_col_name] = df_order[f_col_name].astype(int)
             
             df_sorted = df_order.sort_values(by=[h_col_name, e_col_name], ascending=[True, True])
             grouped = df_sorted.groupby(h_col_name)
@@ -672,21 +759,30 @@ class IntegratedBoxApp:
         try:
             wb = openpyxl.load_workbook(file_path, data_only=True)
             sheet = wb.active
-            ok_count, fail_rows = 0, []
+            parse_fail_rows, values = [], []
             for i, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
-                if row[0] is not None:
-                    code = str(row[0]).strip()
-                    if save_or_update_product(code, (float(row[1] or 0), float(row[2] or 0), float(row[3] or 0))):
-                        ok_count += 1
-                    else:
-                        fail_rows.append(f"{i}행 ({code}): {db_error_text() or '알 수 없는 오류'}")
+                if row[0] is None:
+                    continue
+                code = str(row[0]).strip()
+                try:
+                    values.append((code, float(row[1] or 0), float(row[2] or 0), float(row[3] or 0)))
+                except (TypeError, ValueError):
+                    parse_fail_rows.append(f"{i}행 ({code}): 규격이 숫자가 아님")
+
+            ok_count, db_fail_count = bulk_save_products(values)
             self.update_product_tree()
+
+            fail_rows = list(parse_fail_rows)
+            if db_fail_count:
+                fail_rows.append(
+                    f"DB 저장 실패 {db_fail_count}건: {db_error_text() or '알 수 없는 오류'}"
+                )
             if fail_rows:
                 shown = "\n".join(fail_rows[:15])
                 more = f"\n... 외 {len(fail_rows)-15}건 더" if len(fail_rows) > 15 else ""
                 messagebox.showwarning(
                     "일부 실패",
-                    f"{ok_count}건 성공, {len(fail_rows)}건 실패.\n\n실패한 행:\n{shown}{more}"
+                    f"{ok_count}건 성공, {len(values)-ok_count}건 실패.\n\n{shown}{more}"
                 )
             else:
                 messagebox.showinfo("완료", f"원격 DB로 상품 엑셀 업로드 성공! ({ok_count}건)")
@@ -783,8 +879,8 @@ class IntegratedBoxApp:
             wb = openpyxl.load_workbook(file_path, data_only=True)
             sheet = wb.active
 
-            ok_count, fail_rows = 0, []
-            for i, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
+            values = []
+            for row in sheet.iter_rows(min_row=2, values_only=True):
                 raw_combo = row[0]
                 box_name = row[1]
 
@@ -795,18 +891,14 @@ class IntegratedBoxApp:
                     if raw_combo_str and box_name_str:
                         code_list = [c.strip() for c in raw_combo_str.replace(',', '+').split('+') if c.strip()]
                         combo_key = "+".join(sorted(code_list))
-                        if save_or_update_combo(combo_key, box_name_str):
-                            ok_count += 1
-                        else:
-                            fail_rows.append(f"{i}행: {db_error_text() or '알 수 없는 오류'}")
+                        values.append((combo_key, box_name_str))
 
+            ok_count, fail_count = bulk_save_combos(values)
             self.update_combo_tree()
-            if fail_rows:
-                shown = "\n".join(fail_rows[:15])
-                more = f"\n... 외 {len(fail_rows)-15}건 더" if len(fail_rows) > 15 else ""
+            if fail_count:
                 messagebox.showwarning(
                     "일부 실패",
-                    f"{ok_count}건 성공, {len(fail_rows)}건 실패.\n\n실패한 행:\n{shown}{more}"
+                    f"{ok_count}건 성공, {fail_count}건 실패.\n\n{db_error_text() or '알 수 없는 오류'}"
                 )
             else:
                 messagebox.showinfo("완료", f"원격 DB로 지정 박스 조합 엑셀 업로드 성공! ({ok_count}건)")
