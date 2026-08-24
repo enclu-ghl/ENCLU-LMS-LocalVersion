@@ -347,6 +347,7 @@ def wait_for_grid3_row_increase(driver, before_count, expected_index, timeout=4.
 
 
 def set_matching_qty(driver, row_index, qty):
+    check_and_handle_native_alert(driver)
     target_rowid = str(row_index + 1)
     try:
         qty_input = driver.find_element(
@@ -464,6 +465,7 @@ def close_matching_modal(driver):
 def ensure_load_next_matching_checked(driver):
     """'연속매칭' 체크박스가 켜져 있는지 확인하고, 안 켜져 있으면 켠다.
     이미 켜져 있는데 실수로 다시 클릭하면 꺼져버리므로 반드시 is_selected()로 먼저 확인한다."""
+    check_and_handle_native_alert(driver)
     try:
         checkbox = driver.find_element(By.ID, LOAD_NEXT_MATCHING_CHECKBOX_ID)
     except NoSuchElementException:
@@ -960,7 +962,9 @@ if __name__ == "__main__":
             log("[FAIL] 매크로 비정상 종료")
     except Exception as e:
         log(f"[ERR] 오류 발생: {e}")
-        traceback.print_exc()
+        # traceback.print_exc()는 sys.stderr가 None이면(콘솔 없는 재실행 환경) 그 자체로
+        # AttributeError를 던진다. log()는 이미 print 실패를 삼키게 되어 있으니 그걸 통해 남긴다.
+        log(traceback.format_exc())
     finally:
         if not IS_GUI:
             try:

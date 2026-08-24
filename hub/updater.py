@@ -255,13 +255,54 @@ def kill_run_children() -> int:
         return 0
     exe = os.path.basename(sys.executable)
     no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+    # wmic은 최신 Windows에서 단계적으로 폐기되는 중이라, 없어지면 여기서 조용히
+    # 0을 반환하고 넘어가버린다 — 그러면 자식이 실제로는 살아있는데도 정리 안 된
+    # 채 업데이트가 진행되어(문서화된 위험: 구버전 워커가 신버전과 같이 떠서 UPH가
+    # 같은 파일을 두 번 반영) 문제가 조용히 재발한다. uph_control_panel.py의
+    # find_external_processes()와 같은 방식으로 PowerShell 폴백을 둔다.
+    out = None
     try:
         out = subprocess.run(
             ["wmic", "process", "where", f"name='{exe}'", "get", "ProcessId,CommandLine"],
             capture_output=True, text=True, timeout=10, creationflags=no_win,
         ).stdout
     except (OSError, subprocess.SubprocessError):
-        return 0
+        out = None
+
+    if not out or not out.strip():
+        try:
+            ps_cmd = (
+                "Get-CimInstance Win32_Process | "
+                f"Where-Object {{ $_.Name -eq '{exe}' }} | "
+                "ForEach-Object { \"$($_.ProcessId)|$($_.CommandLine)\" }"
+            )
+            ps_out = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_cmd],
+                capture_output=True, text=True, timeout=10, creationflags=no_win,
+            ).stdout
+        except (OSError, subprocess.SubprocessError):
+            return 0
+
+        killed = 0
+        me = os.getpid()
+        for line in ps_out.splitlines():
+            line = line.strip()
+            if not line or "|" not in line or "--run" not in line:
+                continue
+            pid_str, _cmdline = line.split("|", 1)
+            if not pid_str.isdigit():
+                continue
+            pid = int(pid_str)
+            if pid == me:
+                continue
+            try:
+                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                               capture_output=True, timeout=10, creationflags=no_win)
+                killed += 1
+            except (OSError, subprocess.SubprocessError):
+                pass
+        return killed
 
     killed = 0
     me = os.getpid()

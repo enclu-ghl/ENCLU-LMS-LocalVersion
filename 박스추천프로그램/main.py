@@ -60,6 +60,15 @@ def get_db_engine():
         return _DB_ENGINE
     
     try:
+        # DB_HOST/DB_PASSWORD가 없으면 quote_plus(None)이 TypeError를 던지는데,
+        # 그 메시지만 보고는 "비번이 안 설정됨"인지 "네트워크 문제"인지 구분이 안 된다.
+        # .env 누락을 먼저 걸러서 원인을 명확히 밝힌다.
+        missing = [name for name, val in (("DB_HOST", DB_HOST), ("DB_PASSWORD", DB_PASSWORD)) if not val]
+        if missing:
+            raise RuntimeError(
+                f".env에 {', '.join(missing)}이(가) 설정되어 있지 않습니다. "
+                "박스추천프로그램 폴더의 .env를 확인해주세요."
+            )
         safe_password = urllib.parse.quote_plus(DB_PASSWORD)
         connection_url = f"postgresql+psycopg2://{DB_USER}:{safe_password}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
         # connect_timeout: 이 프로그램은 시작하자마자 GUI 스레드에서 engine.connect()를
