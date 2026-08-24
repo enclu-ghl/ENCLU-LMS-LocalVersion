@@ -626,6 +626,24 @@ def _is_dead_session_error(e):
     return any(sig in msg for sig in DEAD_SESSION_SIGNATURES)
 
 
+# goto_extended_order_search()가 상단 메뉴/사이드바 메뉴를 못 찾아서 던지는 TimeoutException의
+# 메시지. 브라우저/세션은 멀쩡히 붙어있는데(그래서 DEAD_SESSION_SIGNATURES엔 안 걸림) 이지어드민
+# 로그인 세션만 만료돼서 로그인 화면으로 넘어간 경우도 정확히 같은 증상(메뉴를 못 찾음)으로
+# 나타난다. DOM을 직접 못 들여다봐서(로그인 화면 구조를 코드로 확신할 수 없음) "로그인 화면이다"
+# 라고 단정하진 않되, 같은 메뉴 진입 실패가 반복되면 로그인 만료 가능성을 명시적으로 안내한다
+# — 예전엔 이 경우도 그냥 [ERR] ... 오류 발생으로만 찍혀서 "재시도해도 왜 계속 안 되는지"가
+# 안 보였다(일반 오류와 구분이 안 됨).
+MENU_NAV_FAILURE_SIGNATURES = [
+    "'주문/배송' 상단 메뉴 진입 실패",
+    "'확장주문검색2' 진입 실패",
+]
+
+
+def _is_menu_nav_failure(e):
+    msg = str(e)
+    return any(sig in msg for sig in MENU_NAV_FAILURE_SIGNATURES)
+
+
 def _watch_folder():
     """watchdog이 감시하는 폴더. watchdog_agent와 같은 규칙으로 결정한다."""
     env = os.getenv("UPH_WATCH_FOLDER")
@@ -678,6 +696,7 @@ def run_forever():
     log(f"브라우저 연결됨: {driver.title}")
 
     consecutive_reconnect_failures = 0
+    consecutive_menu_nav_failures = 0
     round_no = 0
     last_recon_time = 0   # 아직 한 번도 재확인 안 함 -> 기준선 설정 끝나면 곧바로 1회 실행됨
     while True:
@@ -699,6 +718,7 @@ def run_forever():
             else:
                 success = run_download_macro(driver, baseline=baseline_mode)
             consecutive_reconnect_failures = 0
+            consecutive_menu_nav_failures = 0
             if success:
                 log("[DONE] 다운로드 매크로 정상 완료")
                 if baseline_mode:
@@ -733,9 +753,19 @@ def run_forever():
                     log("    ⚠️ 디버그 크롬이 꺼져있거나 이지어드민 탭이 완전히 닫힌 것으로 보입니다.")
                     log('    ⚠️ 다음 명령으로 디버그 크롬을 다시 켜고 이지어드민에 로그인해주세요:')
                     log('        chrome.exe --remote-debugging-port=9222 --user-data-dir="C:\\chrome-debug-profile"')
+            elif _is_menu_nav_failure(e):
+                consecutive_menu_nav_failures += 1
+                log(f"[ERR] {round_no}회차: 메뉴 진입에 실패했습니다 ({consecutive_menu_nav_failures}회 연속): {e}")
+                if consecutive_menu_nav_failures >= 2:
+                    log("    ⚠️ 브라우저는 붙어있는데 같은 지점에서 계속 실패하고 있습니다 — "
+                        "이지어드민 로그인 세션이 만료되어 로그인 화면으로 넘어갔을 가능성이 있습니다.")
+                    log("    ⚠️ 디버그 크롬 창을 직접 확인해서, 로그인 화면이면 다시 로그인해주세요.")
+                else:
+                    log(traceback.format_exc())
             else:
+                consecutive_menu_nav_failures = 0
                 log(f"[ERR] {round_no}회차 오류 발생: {e}")
-                traceback.print_exc()
+                log(traceback.format_exc())
 
         log(f"{LOOP_INTERVAL_SEC}초 대기 후 다음 회차 진행...")
         time.sleep(LOOP_INTERVAL_SEC)

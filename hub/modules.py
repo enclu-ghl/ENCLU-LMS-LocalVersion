@@ -22,6 +22,18 @@ from tkinter import messagebox
 
 from . import paths, secrets
 
+
+def _log_exception():
+    """traceback.print_exc()는 sys.stderr가 없으면(windowed exe) 그 자체가
+    AttributeError를 던져서, 원래 예외를 messagebox로 보여준 직후 새 예외로
+    콜백이 죽는다. 파일로 남겨서 콘솔 유무와 상관없이 항상 진단 가능하게 한다."""
+    try:
+        with open(os.path.join(paths.APP_DIR, "hub_error.log"), "a", encoding="utf-8") as f:
+            f.write(traceback.format_exc())
+            f.write("\n" + "-" * 60 + "\n")
+    except Exception:
+        pass
+
 #: 허브 카드 key → (모듈명, App 클래스명, 창 제목, 프로그램 폴더명)
 #  모듈명은 폴더에 공백/한글이 있어 파일명 기준으로 import한다.
 REGISTRY = {
@@ -139,7 +151,7 @@ def launch(parent, key: str, theme_name: str = "light"):
             "(자세한 진단은 ENCLU_SCM.exe --selftest 로 확인할 수 있습니다)",
             parent=parent,
         )
-        traceback.print_exc()
+        _log_exception()
         return None
 
     win = tk.Toplevel(parent)
@@ -153,7 +165,7 @@ def launch(parent, key: str, theme_name: str = "light"):
             f"{title} 을(를) 여는 중 문제가 발생했습니다.\n\n{type(e).__name__}: {e}",
             parent=parent,
         )
-        traceback.print_exc()
+        _log_exception()
         return None
 
     _open_windows[key] = win

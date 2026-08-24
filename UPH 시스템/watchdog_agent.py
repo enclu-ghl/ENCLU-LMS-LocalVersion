@@ -285,10 +285,21 @@ def read_wms_file(filepath):
     elif ext == ".xlsx":
         df = pd.read_excel(filepath, engine="openpyxl", dtype=str)
     elif ext == ".csv":
-        try:
-            df = pd.read_csv(filepath, encoding="utf-8-sig", dtype=str)
-        except UnicodeDecodeError:
-            df = pd.read_csv(filepath, encoding="cp949", dtype=str)
+        # utf-8-sig/cp949 둘 다 실패하면 원래 원인이 안 보이는 raw UnicodeDecodeError가
+        # 그대로 새서 로그에 "byte 0x.. in position .." 같은 알아보기 힘든 메시지만 남았다
+        # (file_splitter_gui.py에서 같은 문제를 먼저 발견해 고친 것과 동일한 패턴).
+        last_err = None
+        for enc in ("utf-8-sig", "cp949"):
+            try:
+                df = pd.read_csv(filepath, encoding=enc, dtype=str)
+                break
+            except UnicodeDecodeError as e:
+                last_err = e
+        else:
+            raise ValueError(
+                f"CSV 인코딩을 판별하지 못했습니다: {os.path.basename(filepath)}\n"
+                f"(utf-8 / cp949 모두 실패)\n{last_err}"
+            )
     else:
         raise ValueError(f"지원하지 않는 파일 형식: {ext}")
 

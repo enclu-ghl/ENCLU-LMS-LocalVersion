@@ -253,6 +253,23 @@ def find_matching_button(driver, _retried=False):
     return None
 
 
+def _maximize_and_retry_find(driver, by, selector, what):
+    """작은 창에서 반응형 레이아웃 때문에 요소가 안 보일 때 창을 최대화하고 딱
+    한 번만 다시 찾아본다 — find_matching_button에서 매칭 버튼에만 쓰던 복구
+    방식을 같은 문제를 겪을 수 있는 다른 버튼(닫기/조회)에도 동일하게 적용한다.
+    성공하면 요소, 끝까지 못 찾으면 None."""
+    log(f"  [WARN] {what}을(를) 못 찾음 — 창을 최대화하고 한 번 더 확인합니다")
+    try:
+        driver.maximize_window()
+        time.sleep(0.5)
+    except Exception as e:
+        log(f"  [WARN] 창 최대화 재시도 실패: {e}")
+    try:
+        return driver.find_element(by, selector)
+    except NoSuchElementException:
+        return None
+
+
 def clear_search_input(driver):
     check_and_handle_native_alert(driver)
     actions = ActionChains(driver)
@@ -431,8 +448,10 @@ def close_matching_modal(driver):
     try:
         btn = driver.find_element(By.CSS_SELECTOR, MODAL_CLOSE_BTN_SELECTOR)
     except NoSuchElementException:
-        log("  [WARN] '닫기' 버튼을 못 찾음")
-        return False
+        btn = _maximize_and_retry_find(driver, By.CSS_SELECTOR, MODAL_CLOSE_BTN_SELECTOR, "'닫기' 버튼")
+        if btn is None:
+            log("  [WARN] '닫기' 버튼을 못 찾음")
+            return False
     if not safe_click(driver, btn):
         log("  [WARN] '닫기' 버튼 클릭 실패")
         return False
@@ -473,8 +492,10 @@ def open_matching_session(driver, timeout=WAIT_TIMEOUT):
     try:
         btn = driver.find_element(By.CSS_SELECTOR, GRID1_INQUIRY_BTN_SELECTOR)
     except NoSuchElementException:
-        log("  [WARN] grid1 맨 위 행의 '조회' 버튼을 못 찾음 (리스트에 남은 매칭 건이 없을 수 있음)")
-        return False
+        btn = _maximize_and_retry_find(driver, By.CSS_SELECTOR, GRID1_INQUIRY_BTN_SELECTOR, "grid1 '조회' 버튼")
+        if btn is None:
+            log("  [WARN] grid1 맨 위 행의 '조회' 버튼을 못 찾음 (리스트에 남은 매칭 건이 없을 수 있음)")
+            return False
     if not safe_click(driver, btn):
         log("  [WARN] '조회' 버튼 클릭 실패")
         return False
@@ -567,6 +588,13 @@ def process_one_matching_item(driver):
     processed_count = 0
     initial_grid3_codes = get_grid3_option_codes(driver)
 
+    # 아래 세 곳의 'continue'(span 갱신됨/클릭 실패)는 다른 재시도들과 달리 횟수 제한이
+    # 없어서, 같은 span에서 계속 stale/클릭실패가 반복되면(예: 팝업이 계속 막고 있거나
+    # 화면이 근본적으로 깨진 상황) 매크로가 진행도 실패도 없이 영원히 도는 문제가 있었다.
+    # 공통 카운터로 묶어서 일정 횟수를 넘으면 멈추고 사람이 보게 한다.
+    progress_stall_count = 0
+    MAX_PROGRESS_STALL = 8
+
     while True:
         spans = get_option_spans(driver)
 
@@ -604,7 +632,11 @@ def process_one_matching_item(driver):
         try:
             span_text = span.text.strip()
         except StaleElementReferenceException:
-            log("  [WARN] span 갱신됨 -> 재시도")
+            progress_stall_count += 1
+            if progress_stall_count >= MAX_PROGRESS_STALL:
+                log(f"  [🛑 STUCK] span 갱신이 {MAX_PROGRESS_STALL}회 연속 반복되어 진행이 안 됩니다 — 화면을 직접 확인해주세요.")
+                return "stuck"
+            log(f"  [WARN] span 갱신됨 -> 재시도 ({progress_stall_count}/{MAX_PROGRESS_STALL})")
             time.sleep(0.5)
             continue
 
@@ -618,6 +650,7 @@ def process_one_matching_item(driver):
             else:
                 log("  [WARN] 수량 span 감지됐으나 직전 옵션 없음 -> 스킵")
             processed_count += 1
+            progress_stall_count = 0
             continue
 
         log(f"    [{processed_count+1}/{len(spans)}] '{span_text}' 클릭 중...")
@@ -627,12 +660,21 @@ def process_one_matching_item(driver):
             time.sleep(0.3)
             clicked = safe_click(driver, span)
             if not clicked:
-                log("  [WARN] span 클릭 실패 -> 재시도")
+                progress_stall_count += 1
+                if progress_stall_count >= MAX_PROGRESS_STALL:
+                    log(f"  [🛑 STUCK] span 클릭 실패가 {MAX_PROGRESS_STALL}회 연속 반복되어 진행이 안 됩니다 — 화면을 직접 확인해주세요.")
+                    return "stuck"
+                log(f"  [WARN] span 클릭 실패 -> 재시도 ({progress_stall_count}/{MAX_PROGRESS_STALL})")
                 time.sleep(0.8)
                 continue
             time.sleep(CLICK_DELAY)
+            progress_stall_count = 0
         except StaleElementReferenceException:
-            log("  [WARN] 클릭 시 span 갱신됨 -> 재시도")
+            progress_stall_count += 1
+            if progress_stall_count >= MAX_PROGRESS_STALL:
+                log(f"  [🛑 STUCK] 클릭 시 span 갱신이 {MAX_PROGRESS_STALL}회 연속 반복되어 진행이 안 됩니다 — 화면을 직접 확인해주세요.")
+                return "stuck"
+            log(f"  [WARN] 클릭 시 span 갱신됨 -> 재시도 ({progress_stall_count}/{MAX_PROGRESS_STALL})")
             time.sleep(0.5)
             continue
 
@@ -806,6 +848,12 @@ def run_matching_macro(driver):
         log(f"\n[{round_num}번째 매칭 건 처리 시작]")
 
         result = process_one_matching_item(driver)
+
+        if result == "stuck":
+            log("")
+            log("🛑 같은 옵션에서 진행이 계속 막혀 매크로를 멈춥니다.")
+            log("   화면 상태를 직접 확인해주세요.")
+            return False
 
         if result == "mismatch":
             consecutive_mismatch += 1

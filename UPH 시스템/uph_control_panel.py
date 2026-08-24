@@ -158,6 +158,11 @@ class ProcessPanel:
         # 허브 exe 안에서는 자식이 _DATA_DIR에 로그를 남기므로 거기서 읽어야 한다.
         # (BASE_DIR은 번들 임시 폴더라 로그가 없다)
         self.log_path = os.path.join(_DATA_DIR or BASE_DIR, log_file)
+        # logging.basicConfig가 실행되기 전(임포트 오류, 문법 오류 등)에 죽으면 log_path엔
+        # 아무 것도 안 남는다 — 그 경우의 유일한 단서인 표준에러를 DEVNULL로 버리지 않고
+        # 파일로 남겨서, 프로세스가 갑자기 죽었을 때 원인을 보여줄 수 있게 한다.
+        self.stderr_path = os.path.join(_DATA_DIR or BASE_DIR,
+                                        os.path.splitext(script_name)[0] + "_stderr.log")
         self.proc = None
         self.start_time = None
         self.stop_time = None
@@ -239,10 +244,15 @@ class ProcessPanel:
                 return
 
         try:
+            stderr_f = open(self.stderr_path, "w", encoding="utf-8", errors="replace")
+        except Exception:
+            stderr_f = subprocess.DEVNULL  # 파일을 못 열어도 실행 자체는 막지 않음
+
+        try:
             popen_kwargs = dict(
                 cwd=_DATA_DIR or BASE_DIR,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=stderr_f,
                 stdin=subprocess.DEVNULL,
                 env=child_env,
             )
@@ -257,6 +267,9 @@ class ProcessPanel:
         except Exception as e:
             self._append_log(f"[ERROR] 실행 실패: {e}")
             return
+        finally:
+            if stderr_f is not subprocess.DEVNULL:
+                stderr_f.close()
 
         self.start_time = datetime.now()
         self.stop_time = None
@@ -269,27 +282,52 @@ class ProcessPanel:
         self._append_log(f"===== [{self.start_time.strftime('%H:%M:%S')}] 프로세스 시작 (PID {self.proc.pid}) =====")
 
     def stop(self):
+        really_stopped = True
         if self.proc and self.proc.poll() is None:
             # ⚠️ terminate()는 직계 자식 하나만 죽인다. 통합 exe에서 자식은
             #    PyInstaller onefile이라 부트로더 부모 + 실제 파이썬 자식 두 개로
             #    뜨고, Popen이 준 pid는 부트로더 쪽이다. 그래서 종료를 눌러도
             #    진짜 일하는 프로세스(그리고 그 밑의 chromedriver)가 살아남아
             #    시작/중지를 반복할수록 쌓인다. /T 로 트리째 정리한다.
+            #
+            #    예전엔 taskkill 리턴코드를 안 보고 무조건 "중지됨"으로 표시했다 —
+            #    권한 문제 등으로 taskkill이 실제로 실패해도 화면은 멀쩡히 꺼진
+            #    것처럼 보여서, 백그라운드에 프로세스가 계속 쌓일 수 있었다.
             try:
-                subprocess.run(
+                result = subprocess.run(
                     ["taskkill", "/PID", str(self.proc.pid), "/T", "/F"],
                     capture_output=True, timeout=10, creationflags=_NO_WINDOW,
                 )
+                killed_ok = (result.returncode == 0)
             except Exception:
+                killed_ok = False
+
+            if not killed_ok:
                 try:
                     self.proc.terminate()
                 except Exception:
                     pass
+
+            # taskkill 리턴코드와 무관하게, 부트로더 프로세스가 실제로 죽었는지 직접 확인한다.
+            try:
+                self.proc.wait(timeout=3)
+                really_stopped = True
+            except subprocess.TimeoutExpired:
+                really_stopped = False
+
         self.stop_time = datetime.now()
-        self.status_label.config(text="● 중지됨", foreground="#888")
+        if really_stopped:
+            self.status_label.config(text="● 중지됨", foreground="#888")
+            self._append_log(f"===== [{self.stop_time.strftime('%H:%M:%S')}] 종료 요청됨 =====")
+        else:
+            self.status_label.config(text="⚠️ 종료 확인 실패", foreground="#c0392b")
+            self._append_log(
+                f"===== [{self.stop_time.strftime('%H:%M:%S')}] ⚠️ 종료 명령을 보냈지만 "
+                f"프로세스(PID {self.proc.pid})가 여전히 살아있는 것으로 보입니다. "
+                "작업 관리자에서 직접 확인해주세요. ====="
+            )
         self.start_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
-        self._append_log(f"===== [{self.stop_time.strftime('%H:%M:%S')}] 종료 요청됨 =====")
 
     # ── 주기적 갱신 (1초마다 App에서 호출) ──
     def tick(self):
@@ -299,6 +337,11 @@ class ProcessPanel:
             self.start_btn.config(state="normal")
             self.stop_btn.config(state="disabled")
             self.stop_time = datetime.now()
+            self._append_log(f"[ERROR] 프로세스가 예상치 못하게 종료됨 (종료코드 {self.proc.returncode})")
+            stderr_tail = self._read_stderr_tail()
+            if stderr_tail:
+                self._append_log("----- 표준에러 출력(마지막 부분) -----")
+                self._append_log(stderr_tail, newline=False)
 
         if self.start_time and self.proc and self.proc.poll() is None:
             elapsed = datetime.now() - self.start_time
@@ -364,6 +407,16 @@ class ProcessPanel:
                 self._append_log(new_data, newline=False)
         except Exception:
             pass
+
+    def _read_stderr_tail(self, max_chars=4000):
+        try:
+            if not os.path.exists(self.stderr_path):
+                return ""
+            with open(self.stderr_path, "r", encoding="utf-8", errors="replace") as f:
+                data = f.read()
+            return data[-max_chars:] if data else ""
+        except Exception:
+            return ""
 
     def _append_log(self, text, newline=True):
         self.log_box.config(state="normal")
