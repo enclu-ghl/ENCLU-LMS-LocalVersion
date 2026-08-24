@@ -111,29 +111,36 @@ def load_combination_boxes():
     return combos
 
 def save_or_update_combo(combo_key, box_name):
+    """DB 반영 성공 여부를 반드시 반환한다 — 호출부가 이걸 확인 안 하고 무조건
+    '저장됨'으로 화면을 갱신하면, DB 오류가 나도 사용자는 성공한 줄 알게 된다
+    (실제로 combo_key 길이초과 사고를 이렇게 놓친 적 있음)."""
     engine = get_db_engine()
-    if not engine: return
+    if not engine: return False
     try:
         with engine.begin() as conn:
             sql = text("""
-            INSERT INTO box_combinations (combo_key, box_name, updated_at) 
+            INSERT INTO box_combinations (combo_key, box_name, updated_at)
             VALUES (:key, :name, CURRENT_TIMESTAMP)
-            ON CONFLICT (combo_key) 
+            ON CONFLICT (combo_key)
             DO UPDATE SET box_name = EXCLUDED.box_name, updated_at = CURRENT_TIMESTAMP;
             """)
             conn.execute(sql, {"key": combo_key, "name": box_name})
+        return True
     except SQLAlchemyError as e:
         _db_error("조합 저장", e)
+        return False
 
 def delete_combo_from_db(combo_key):
     engine = get_db_engine()
-    if not engine: return
+    if not engine: return False
     try:
         with engine.begin() as conn:
             sql = text("DELETE FROM box_combinations WHERE combo_key = :key;")
             conn.execute(sql, {"key": combo_key})
+        return True
     except SQLAlchemyError as e:
         _db_error("조합 삭제", e)
+        return False
 
 def load_products():
     products = {}
@@ -150,27 +157,31 @@ def load_products():
 
 def save_or_update_product(code, dims):
     engine = get_db_engine()
-    if not engine: return
+    if not engine: return False
     try:
         with engine.begin() as conn:
             sql = text("""
-            INSERT INTO products (product_code, width, depth, height, updated_at) 
+            INSERT INTO products (product_code, width, depth, height, updated_at)
             VALUES (:code, :w, :d, :h, CURRENT_TIMESTAMP)
-            ON CONFLICT (product_code) 
+            ON CONFLICT (product_code)
             DO UPDATE SET width = EXCLUDED.width, depth = EXCLUDED.depth, height = EXCLUDED.height, updated_at = CURRENT_TIMESTAMP;
             """)
             conn.execute(sql, {"code": code, "w": dims[0], "d": dims[1], "h": dims[2]})
+        return True
     except SQLAlchemyError as e:
         _db_error("상품 저장", e)
+        return False
 
 def delete_product_from_db(code):
     engine = get_db_engine()
-    if not engine: return
+    if not engine: return False
     try:
         with engine.begin() as conn:
             conn.execute(text("DELETE FROM products WHERE product_code = :code;"), {"code": code})
+        return True
     except SQLAlchemyError as e:
         _db_error("상품 삭제", e)
+        return False
 
 # -----------------------------------------------------------------------------
 # 4. 박스 크기 연산 알고리즘 (Best-Fit 3D Bin Packing - 위로 쌓기 최적화)
@@ -634,11 +645,13 @@ class IntegratedBoxApp:
         if not code: return
         try:
             w, d, h = float(self.ent_p_w.get() or 0), float(self.ent_p_d.get() or 0), float(self.ent_p_h.get() or 0)
-            save_or_update_product(code, (w, d, h))
-            self.update_product_tree()
-            self.ent_p_code.delete(0, tk.END); self.ent_p_w.delete(0, tk.END)
-            self.ent_p_d.delete(0, tk.END); self.ent_p_h.delete(0, tk.END)
-        except ValueError: 
+            if save_or_update_product(code, (w, d, h)):
+                self.update_product_tree()
+                self.ent_p_code.delete(0, tk.END); self.ent_p_w.delete(0, tk.END)
+                self.ent_p_d.delete(0, tk.END); self.ent_p_h.delete(0, tk.END)
+            else:
+                messagebox.showerror("저장 실패", f"DB에 저장하지 못했습니다.\n\n{db_error_text() or ''}")
+        except ValueError:
             messagebox.showerror("오류", "규격은 숫자만 입력 가능합니다.")
 
     def delete_product_ui(self):
@@ -646,10 +659,12 @@ class IntegratedBoxApp:
         if not sel: return
         if messagebox.askyesno("삭제 확인", "선택한 상품을 DB에서 삭제하시겠습니까?"):
             code = self.p_tree.item(sel[0], "values")[0]
-            delete_product_from_db(code)
-            self.update_product_tree()
-            self.ent_p_code.delete(0, tk.END); self.ent_p_w.delete(0, tk.END)
-            self.ent_p_d.delete(0, tk.END); self.ent_p_h.delete(0, tk.END)
+            if delete_product_from_db(code):
+                self.update_product_tree()
+                self.ent_p_code.delete(0, tk.END); self.ent_p_w.delete(0, tk.END)
+                self.ent_p_d.delete(0, tk.END); self.ent_p_h.delete(0, tk.END)
+            else:
+                messagebox.showerror("삭제 실패", f"DB에서 삭제하지 못했습니다.\n\n{db_error_text() or ''}")
 
     def import_product_excel(self):
         file_path = filedialog.askopenfilename(filetypes=[("Excel Files", "*.xlsx *.xls")])
@@ -657,12 +672,25 @@ class IntegratedBoxApp:
         try:
             wb = openpyxl.load_workbook(file_path, data_only=True)
             sheet = wb.active
-            for row in sheet.iter_rows(min_row=2, values_only=True): 
+            ok_count, fail_rows = 0, []
+            for i, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
                 if row[0] is not None:
-                    save_or_update_product(str(row[0]).strip(), (float(row[1] or 0), float(row[2] or 0), float(row[3] or 0)))
+                    code = str(row[0]).strip()
+                    if save_or_update_product(code, (float(row[1] or 0), float(row[2] or 0), float(row[3] or 0))):
+                        ok_count += 1
+                    else:
+                        fail_rows.append(f"{i}행 ({code}): {db_error_text() or '알 수 없는 오류'}")
             self.update_product_tree()
-            messagebox.showinfo("완료", "원격 DB로 상품 엑셀 업로드 성공!")
-        except Exception as e: 
+            if fail_rows:
+                shown = "\n".join(fail_rows[:15])
+                more = f"\n... 외 {len(fail_rows)-15}건 더" if len(fail_rows) > 15 else ""
+                messagebox.showwarning(
+                    "일부 실패",
+                    f"{ok_count}건 성공, {len(fail_rows)}건 실패.\n\n실패한 행:\n{shown}{more}"
+                )
+            else:
+                messagebox.showinfo("완료", f"원격 DB로 상품 엑셀 업로드 성공! ({ok_count}건)")
+        except Exception as e:
             messagebox.showerror("오류", f"엑셀 처리 중 에러가 발생했습니다:\n{str(e)}")
 
     def create_tab4(self):
@@ -731,18 +759,22 @@ class IntegratedBoxApp:
         if raw_key and box_name:
             code_list = [c.strip() for c in raw_key.replace(',', '+').split('+') if c.strip()]
             combo_key = "+".join(sorted(code_list))
-            save_or_update_combo(combo_key, box_name)
-            self.update_combo_tree()
-            self.ent_c_key.delete(0, tk.END); self.ent_c_box.delete(0, tk.END)
+            if save_or_update_combo(combo_key, box_name):
+                self.update_combo_tree()
+                self.ent_c_key.delete(0, tk.END); self.ent_c_box.delete(0, tk.END)
+            else:
+                messagebox.showerror("저장 실패", f"DB에 저장하지 못했습니다.\n\n{db_error_text() or ''}")
 
     def delete_combo_ui(self):
         sel = self.c_tree.selection()
         if not sel: return
         if messagebox.askyesno("삭제 확인", "선택한 조합을 DB에서 삭제하시겠습니까?"):
             combo_key = self.c_tree.item(sel[0], "values")[0]
-            delete_combo_from_db(combo_key)
-            self.update_combo_tree()
-            self.ent_c_key.delete(0, tk.END); self.ent_c_box.delete(0, tk.END)
+            if delete_combo_from_db(combo_key):
+                self.update_combo_tree()
+                self.ent_c_key.delete(0, tk.END); self.ent_c_box.delete(0, tk.END)
+            else:
+                messagebox.showerror("삭제 실패", f"DB에서 삭제하지 못했습니다.\n\n{db_error_text() or ''}")
 
     def import_combo_excel(self):
         file_path = filedialog.askopenfilename(filetypes=[("Excel Files", "*.xlsx *.xls")])
@@ -750,23 +782,35 @@ class IntegratedBoxApp:
         try:
             wb = openpyxl.load_workbook(file_path, data_only=True)
             sheet = wb.active
-            
-            for row in sheet.iter_rows(min_row=2, values_only=True): 
+
+            ok_count, fail_rows = 0, []
+            for i, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
                 raw_combo = row[0]
                 box_name = row[1]
-                
+
                 if raw_combo is not None and box_name is not None:
                     raw_combo_str = str(raw_combo).strip()
                     box_name_str = str(box_name).strip()
-                    
+
                     if raw_combo_str and box_name_str:
                         code_list = [c.strip() for c in raw_combo_str.replace(',', '+').split('+') if c.strip()]
                         combo_key = "+".join(sorted(code_list))
-                        save_or_update_combo(combo_key, box_name_str)
-                        
+                        if save_or_update_combo(combo_key, box_name_str):
+                            ok_count += 1
+                        else:
+                            fail_rows.append(f"{i}행: {db_error_text() or '알 수 없는 오류'}")
+
             self.update_combo_tree()
-            messagebox.showinfo("완료", "원격 DB로 지정 박스 조합 엑셀 업로드 성공!")
-        except Exception as e: 
+            if fail_rows:
+                shown = "\n".join(fail_rows[:15])
+                more = f"\n... 외 {len(fail_rows)-15}건 더" if len(fail_rows) > 15 else ""
+                messagebox.showwarning(
+                    "일부 실패",
+                    f"{ok_count}건 성공, {len(fail_rows)}건 실패.\n\n실패한 행:\n{shown}{more}"
+                )
+            else:
+                messagebox.showinfo("완료", f"원격 DB로 지정 박스 조합 엑셀 업로드 성공! ({ok_count}건)")
+        except Exception as e:
             messagebox.showerror("오류", f"엑셀 업로드 실패: {e}")
 
     # -------------------------------------------------------------------------
@@ -921,9 +965,11 @@ class IntegratedBoxApp:
             messagebox.showwarning("경고", "추천된 상자가 없어 등록할 수 없습니다.")
             return
             
-        save_or_update_combo(self.current_t5_combo_key, self.current_t5_box_name)
-        self.update_combo_tree()
-        messagebox.showinfo("등록 완료", f"조합: [{self.current_t5_combo_key}]\n상자: {self.current_t5_box_name}\n\n4번 탭(조합별 지정 박스) DB에 성공적으로 등록되었습니다.")
+        if save_or_update_combo(self.current_t5_combo_key, self.current_t5_box_name):
+            self.update_combo_tree()
+            messagebox.showinfo("등록 완료", f"조합: [{self.current_t5_combo_key}]\n상자: {self.current_t5_box_name}\n\n4번 탭(조합별 지정 박스) DB에 성공적으로 등록되었습니다.")
+        else:
+            messagebox.showerror("등록 실패", f"DB에 저장하지 못했습니다.\n\n{db_error_text() or ''}")
 
 if __name__ == "__main__":
     root = TkinterDnD.Tk()

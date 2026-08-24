@@ -466,10 +466,9 @@ def process_file(filepath, engine, cache_conn, dong_cache):
 
     changed_rows = list(changed_rows_dict.values())
 
-    bulk_save_cache(cache_conn, cache_updates)
-    log.info(f"diffing 완료 — 캐시 변경 {len(cache_updates):,}건 / DB 반영 대상(송장·배송) {len(changed_rows):,}건")
+    log.info(f"diffing 완료 — 캐시 변경 대상 {len(cache_updates):,}건 / DB 반영 대상(송장·배송) {len(changed_rows):,}건")
 
-    if not changed_rows:
+    if not changed_rows and not cache_updates:
         log.info("변경된 상태 없음 (신규 반영 대상 0건)")
         return
 
@@ -477,17 +476,49 @@ def process_file(filepath, engine, cache_conn, dong_cache):
     if unmapped:
         log.warning(f"매핑 안 된 판매처 발견: {unmapped} — Streamlit '판매처 매핑 관리'에서 추가해주세요.")
 
-    push_to_db(engine, changed_rows)
-    log.info(f"DB 반영 완료: {len(changed_rows):,}건")
+    # ⚠️ DB에 먼저 반영하고, 실제로 성공한 만큼만 캐시에 반영한다.
+    # 예전엔 캐시를 먼저 갱신했는데, push_to_db가 청크 중간에 실패하면 캐시는 이미
+    # "반영됨"으로 적혀서 다음 폴링에서 '변경 없음'으로 오판 — 그 행들이 재시도 없이
+    # 영구히 DB에 안 들어가는 사고가 있었다(2026-08-19 감사로 발견).
+    pushed_keys = set()
+    if changed_rows:
+        succeeded_rows = push_to_db(engine, changed_rows)
+        pushed_keys = {(r["order_key"], r["status"]) for r in succeeded_rows}
+        if len(succeeded_rows) < len(changed_rows):
+            log.error(
+                f"DB 반영 일부 실패: {len(succeeded_rows):,}/{len(changed_rows):,}건만 반영됨 — "
+                f"나머지 {len(changed_rows) - len(succeeded_rows):,}건은 캐시를 갱신하지 않아 "
+                f"다음 폴링에서 다시 시도됩니다."
+            )
+        else:
+            log.info(f"DB 반영 완료: {len(succeeded_rows):,}건")
+
+    # 발주/접수처럼 애초에 DB에 안 올라가는 상태 변경은 그대로 캐시에 반영해도 안전하다.
+    # 송장/배송은 실제로 DB 반영에 성공한 것만 캐시에 반영 — 실패분은 캐시를 그대로 둬서
+    # 다음 폴링에서 '아직 안 바뀐 것'으로 다시 잡히게 한다.
+    safe_cache_updates = [
+        u for u in cache_updates
+        if u[1] not in ("송장", "배송") or (u[0], u[1]) in pushed_keys
+    ]
+    bulk_save_cache(cache_conn, safe_cache_updates)
+    skipped = len(cache_updates) - len(safe_cache_updates)
+    if skipped:
+        log.warning(f"DB 반영 실패로 캐시 갱신을 보류한 행: {skipped:,}건 (다음 폴링에서 재시도)")
 
 
 def push_to_db(engine, rows, chunk_size=2000):
     """대량 행을 psycopg2의 execute_values로 upsert.
     이러면 청크(기본 2000행)당 네트워크 왕복이 '딱 1번'만 발생한다.
     2~3만 건 규모에서도 15개 안팎의 왕복으로 끝나 훨씬 빠르다.
+
+    반환: 실제로 커밋에 성공한 행 리스트(원본 순서 유지, 부분 리스트일 수 있음).
+    청크마다 즉시 커밋하므로, 중간 청크에서 실패해도 그 앞 청크는 이미 DB에 들어간
+    상태다. 호출부(process_file)가 이 반환값으로 '성공한 만큼만' 캐시에 반영해야
+    캐시와 실제 DB 상태가 어긋나지 않는다 — 여기서 예외를 그대로 던지면 그 정보가
+    호출부에 전달되지 않으므로, DB 오류는 여기서 잡아서 로그만 남기고 중단한다.
     """
     if not rows:
-        return
+        return []
 
     columns = ["order_key", "invoice_no", "channel_name", "dong", "product_name",
                "quantity", "status", "cs_status", "is_hold",
@@ -510,17 +541,31 @@ def push_to_db(engine, rows, chunk_size=2000):
     template = "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)"
 
     total = len(rows)
+    succeeded = []
     raw_conn = engine.raw_connection()
     try:
         cur = raw_conn.cursor()
         for i in range(0, total, chunk_size):
             chunk = rows[i:i + chunk_size]
             values = [tuple(r[c] for c in columns) for r in chunk]
-            execute_values(cur, sql, values, template=template, page_size=chunk_size)
-            raw_conn.commit()
+            try:
+                execute_values(cur, sql, values, template=template, page_size=chunk_size)
+                raw_conn.commit()
+            except Exception:
+                log.exception(
+                    f"DB 저장 실패 — {i:,}/{total:,}건 지점에서 중단. "
+                    f"이 청크({len(chunk)}건)와 이후 청크는 보류됨(캐시 미반영, 다음 폴링에서 재시도)."
+                )
+                try:
+                    raw_conn.rollback()
+                except Exception:
+                    pass
+                break
+            succeeded.extend(chunk)
             log.info(f"  ↳ DB 저장 진행: {min(i + chunk_size, total):,} / {total:,}건")
     finally:
         raw_conn.close()
+    return succeeded
 
 
 # ══════════════════════════════════════════════════════════════
