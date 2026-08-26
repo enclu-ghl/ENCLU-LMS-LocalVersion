@@ -2301,7 +2301,11 @@ class OrderTab(ttk.Frame):
                             continue
                         out_name = f"{date_str}_{brand}_{label}.xlsx"
                         out_path = os.path.join(output_folder, out_name)
-                        tmp_path = out_path + ".tmp"
+                        # ⚠️ 확장자가 .tmp가 되면 xlsxwriter 엔진이 "Invalid extension for
+                        # engine ...: 'tmp'"로 거부한다(실제 재현됨) — .xlsx는 유지하고
+                        # 파일 이름 쪽에 .tmp를 끼워 넣는다.
+                        base, ext = os.path.splitext(out_path)
+                        tmp_path = base + ".tmp" + ext
                         df_part.to_excel(tmp_path, index=False, engine="xlsxwriter")
                         tmp_entries.append((tmp_path, out_path, label, len(df_part)))
 
