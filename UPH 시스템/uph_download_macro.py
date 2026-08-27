@@ -487,6 +487,7 @@ def poll_download_manager(driver, new_handle, request_click_time):
 
     locked_reqtime_text = None  # 한 번 식별된 뒤로는 이 값으로 매 회차 재조회 (행 순서가 바뀌어도 안 흔들리게)
     attempt = 0
+    consecutive_error = 0  # 서버가 이 요청을 '오류'로 반환하면 완료로 안 바뀌는 영구 실패다 — 무한 대기 방지
     while True:
         attempt += 1
         safe_click(driver, DLMGR_SEARCH_BUTTON)
@@ -557,6 +558,20 @@ def poll_download_manager(driver, new_handle, request_click_time):
         elapsed = time.time() - poll_start
         log(f"    [{attempt}회차, {elapsed:.0f}초 경과] 요청시간={locked_reqtime_text} "
             f"상태={status_text} 진척도={percent_text}")
+
+        # '오류'는 '아직 처리중'과 달리 그대로 둬도 '완료'로 바뀌지 않는 영구 실패 상태다.
+        # 예전엔 이 상태를 못 알아채고 while True가 이걸 몇 시간이고 계속 재조회했다
+        # (실제로 요청 하나를 9시간 넘게 폴링한 사고가 있었음, 2026-08-26~27). 2회
+        # 연속으로 확인되면(혹시 모를 순간적인 표시 오류 방지) 바로 실패로 포기한다.
+        if status_text == "오류":
+            consecutive_error += 1
+            if consecutive_error >= 2:
+                log(f"    ❌ 서버가 이 요청을 '오류' 상태로 반환했습니다 "
+                    f"(요청시간={locked_reqtime_text}, {elapsed:.0f}초 경과) — "
+                    "재시도해도 회복되지 않는 상태라 포기하고 다음 회차로 넘어갑니다.")
+                return False
+        else:
+            consecutive_error = 0
 
         if status_text == "완료" and "100" in percent_text:
             log(f"    ✅ 다운로드 준비 완료(100%) 확인 (서버 생성 대기시간: {elapsed:.0f}초)")
