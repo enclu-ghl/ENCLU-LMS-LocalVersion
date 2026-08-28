@@ -487,6 +487,17 @@ def ensure_load_next_matching_checked(driver):
         return False
 
 
+def grid1_has_pending_item(driver):
+    """'매칭 조회 버튼 창'(grid1) 맨 위 행에 '조회' 버튼이 남아있는지 — 매칭이
+    실제로 다 끝났는지 판단하는 진짜 기준이다. 매칭 팝업(모달) 안의 옵션 span
+    목록은 '연속매칭'이 다음 건을 아직 못 띄웠거나 화면이 일시적으로 비어
+    보이는 경우가 있어 그것만 보고 종료를 판단하면 안 된다(실사용에서 매칭이
+    다 안 끝났는데 종료되는 사고 발생, 2026-08-28). grid1은 모달 뒤에 그대로
+    있는 같은 페이지라 모달이 열려 있어도 조회 가능하다."""
+    check_and_handle_native_alert(driver)
+    return len(safe_find_elements(driver, GRID1_INQUIRY_BTN_SELECTOR)) > 0
+
+
 def open_matching_session(driver, timeout=WAIT_TIMEOUT):
     """grid1 리스트 맨 위(rowid=0) '조회' 버튼을 눌러 매칭 팝업을 열고, '연속매칭'을 체크한다.
     맨 처음 시작할 때와, 재시작할 때 둘 다 이 함수 하나로 처리한다."""
@@ -910,7 +921,39 @@ def run_matching_macro(driver):
 
         next_spans = get_option_spans(driver)
         if not next_spans:
-            log("\n더 이상 처리할 매칭 건이 없습니다 -> 매크로 정상 종료")
+            # 매칭 팝업이 비어 보인다고 바로 끝난 걸로 치지 않는다 — '연속매칭'이 다음
+            # 건을 아직 못 띄웠을 수도 있다. 실제 완료 여부는: 팝업을 '닫기'로 닫은
+            # 뒤(처음 시작할 때와 같은 상태로 되돌린 뒤) grid1(매칭 조회 버튼 창) 맨
+            # 위 행에 조회 버튼이 정말 없는지로만 판단한다. 순간적인 화면 지연으로
+            # 오판하지 않도록 짧은 간격을 두고 3회 재확인한다.
+            log("\n매칭 팝업에 남은 옵션이 없음 -> '닫기' 후 grid1(조회 버튼 목록)을 확인합니다...")
+            if not close_matching_modal(driver):
+                log("")
+                log("🛑 매칭 팝업 '닫기' 버튼을 찾지 못했습니다 — 매크로를 멈춥니다.")
+                log("   화면 상태를 직접 확인해주세요.")
+                return False
+
+            still_pending = False
+            for check_i in range(1, 4):
+                time.sleep(1.5)
+                if grid1_has_pending_item(driver):
+                    still_pending = True
+                    log(f"    [재확인 {check_i}/3] grid1에 아직 조회할 항목이 남아있음 — "
+                        "매칭이 끝난 게 아니었음")
+                    break
+                log(f"    [재확인 {check_i}/3] grid1에 조회 버튼 없음")
+
+            if still_pending:
+                log("  🔁 처음 시작할 때처럼 grid1 조회 -> 연속매칭 확인을 다시 진행합니다...")
+                if not open_matching_session(driver):
+                    log("")
+                    log("🛑 grid1에 조회할 항목은 있는데 매칭 팝업을 다시 여는 데 실패했습니다 "
+                        "— 매크로를 멈춥니다.")
+                    log("   화면 상태를 직접 확인해주세요.")
+                    return False
+                continue
+
+            log("\ngrid1에 조회할 항목이 없음을 3회 확인 -> 매크로 정상 종료")
             return True
 
 
