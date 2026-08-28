@@ -596,7 +596,12 @@ def get_grid3_option_codes(driver):
 #  옵션 코드 처리 루프
 # ─────────────────────────────────────────
 
-def process_one_matching_item(driver):
+def process_one_matching_item(driver, miss_tracker=None):
+    """miss_tracker: run_matching_macro가 세션 전체에 걸쳐 공유하는 {"count": N} 딕셔너리.
+    서로 다른 매칭 건에서 산발적으로(연속이 아니게) 옵션코드 검색 MISS가 나는 경우까지
+    누적으로 잡아내기 위함 — 같은 건이 3회 연속 실패할 때만 멈추는 기존 안전장치로는
+    이 패턴을 못 잡는다(각 건이 재시작 한 번으로 다음 건으로 넘어가버려서 연속 카운트가
+    리셋됨)."""
     actions = ActionChains(driver)
     processed_count = 0
     initial_grid3_codes = get_grid3_option_codes(driver)
@@ -721,6 +726,8 @@ def process_one_matching_item(driver):
 
         if matched_row is None:
             log(f"    [MISS] '{span_text}' {max_search_retries}회 재시도 후에도 결과 없음 -> 누락 가능성! 수동 확인 필요")
+            if miss_tracker is not None:
+                miss_tracker["count"] += 1
             clear_search_input(driver)
             time.sleep(CLICK_DELAY)
             processed_count += 1
@@ -828,6 +835,8 @@ def process_one_matching_item(driver):
 
         if not row_increased:
             log(f"    [MISS] {max_dbl_retries}회 재시도 후에도 grid3 행 증가 없음 -> '{span_text}' 수동 확인 필요")
+            if miss_tracker is not None:
+                miss_tracker["count"] += 1
         else:
             if retry_attempt > 0:
                 log(f"    [OK] {retry_attempt}회 재시도 후 grid3 행 증가 확인됨")
@@ -856,11 +865,26 @@ def run_matching_macro(driver):
     consecutive_mismatch = 0
     MAX_CONSECUTIVE_MISMATCH = 3  # 같은 건이 계속 실패하면(예: 화면이 근본적으로 안 맞는 상황) 무한반복 방지
 
+    # 서로 다른 매칭 건에서 산발적으로(연속이 아니게) 옵션코드 MISS가 나는 경우까지
+    # 세션 전체 누적으로 잡는다 — 그때마다 재시작으로 다음 건으로 넘어가버리면 위
+    # consecutive_mismatch는 매번 리셋되어 못 잡는다. 방치하면 여러 주문에 옵션이
+    # 하나씩 빠진 채로 "매칭 완료" 처리될 위험이 있어, 놓치는 것보다 자주 멈추는
+    # 쪽이 안전하다고 판단해 낮게(5건) 잡는다.
+    miss_tracker = {"count": 0}
+    MAX_TOTAL_MISS = 5
+
     while True:
         round_num += 1
         log(f"\n[{round_num}번째 매칭 건 처리 시작]")
 
-        result = process_one_matching_item(driver)
+        result = process_one_matching_item(driver, miss_tracker)
+
+        if miss_tracker["count"] >= MAX_TOTAL_MISS:
+            log("")
+            log(f"🛑 세션 전체에서 옵션코드 매칭 실패(MISS)가 누적 {miss_tracker['count']}건 발생했습니다 — "
+                "서로 다른 여러 건에 걸쳐 반복되고 있어 매크로를 멈춥니다.")
+            log("   지금까지 처리된 주문 중 로그의 [MISS] 항목들을 화면에서 직접 확인해주세요.")
+            return False
 
         if result == "stuck":
             log("")
