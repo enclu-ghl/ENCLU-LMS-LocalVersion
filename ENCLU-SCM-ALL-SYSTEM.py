@@ -186,7 +186,14 @@ class HubApp:
     # ── UI 구성 ─────────────────────────────────────────────────
     def _build_ui(self):
         pal = self.pal
+        # ⚠️ Toplevel(다른 프로그램 창)도 root의 winfo_children()에 포함된다.
+        # 여길 그냥 다 destroy()하면 테마 전환/설정 저장 때마다 열려 있던
+        # 파일찢기·박스추천·매칭매크로·UPH 제어판 창까지 통째로 꺼져버린다
+        # (실사용 신고, 2026-08-28) — 허브 UI 위젯만 지우고 다른 프로그램
+        # 창은 그대로 둔다.
         for child in self.root.winfo_children():
+            if isinstance(child, tk.Toplevel):
+                continue
             child.destroy()
 
         # ── 상단 헤더 ──
