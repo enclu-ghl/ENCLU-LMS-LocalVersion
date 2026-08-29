@@ -1158,8 +1158,15 @@ class BatchTab(ttk.Frame):
         self.tree.bind("<<TreeviewSelect>>", self.on_select)
 
         # ── 추가/수정 입력 ──
+        # ⚠️ 별도의 '저장' 버튼이 없다 — 목록에서 항목을 선택하면 아래 칸에 값이
+        # 채워지고, 그 칸을 직접 고친 뒤 '선택 수정'을 눌러야 그게 곧 저장이다.
+        # 이 흐름이 안 보여서 "수정이 안 된다"는 문의가 있었음(2026-08-29) — 안내문 추가.
+        ttk.Label(
+            self, text="✏️ 수정하려면: 목록에서 항목 선택 → 아래 칸의 값을 고침 → '선택 수정' 클릭(별도 저장 버튼 없음)",
+            foreground="#B26A00", font=("맑은 고딕", 8, "bold")
+        ).pack(anchor="w", pady=(6, 0))
         form = ttk.Frame(self)
-        form.pack(fill="x", pady=(10, 4))
+        form.pack(fill="x", pady=(4, 4))
         row_a = ttk.Frame(form)
         row_a.pack(fill="x", pady=2)
         ttk.Label(row_a, text="옵션코드", width=9).pack(side="left")
@@ -1655,8 +1662,12 @@ class AmazonUrlTab(ttk.Frame):
         self.tree.config(yscrollcommand=scrollbar.set)
         self.tree.bind("<<TreeviewSelect>>", self.on_select)
 
+        ttk.Label(
+            self, text="✏️ 수정하려면: 목록에서 항목 선택 → 아래 칸의 값을 고침 → '선택 수정' 클릭(별도 저장 버튼 없음)",
+            foreground="#B26A00", font=("맑은 고딕", 8, "bold")
+        ).pack(anchor="w", pady=(6, 0))
         form = ttk.Frame(self)
-        form.pack(fill="x", pady=(10, 4))
+        form.pack(fill="x", pady=(4, 4))
         row_a = ttk.Frame(form)
         row_a.pack(fill="x", pady=2)
         ttk.Label(row_a, text="HSCODE", width=8).pack(side="left")
