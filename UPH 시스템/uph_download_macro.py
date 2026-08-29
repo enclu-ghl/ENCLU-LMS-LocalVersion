@@ -62,6 +62,11 @@ IS_GUI = (not sys.stdin) or (not sys.stdin.isatty())
 #  ★ 설정 영역
 # ─────────────────────────────────────────
 WAIT_TIMEOUT   = 15    # 요소/팝업 대기 시간(초)
+# 팝업3(SweetAlert 다운로드 안내)만 따로 더 길게 준다 — 행사 기간(평소 대비 물량
+# 10배 이상)엔 서버 응답이 느려져서 이 팝업이 뜨는 데 15초를 넘기고, 반복 실패해서
+# 다운로드가 계속 밀리는 게 실사용에서 확인됨(2026-08-29). 팝업1/2는 항상 빠르게
+# 통과해서 그대로 WAIT_TIMEOUT을 쓰고, 이것만 늘린다.
+SWAL_WAIT_TIMEOUT = 45
 CLICK_DELAY    = 0.4   # 클릭 사이 딜레이(초)
 # 발주일 검색 범위: 시작(과거) / 종료(미래) 오프셋을 따로 둠.
 # 미래 방향은 발주일이 미래일 수 없으므로 0으로 고정 — 예전엔 ±7일(최대 15일치)을 매번
@@ -408,7 +413,7 @@ def click_download_and_handle_popups(driver):
 
         # 팝업3: SweetAlert 다운로드 안내 (문구 입력 필요)
         log("    팝업3 SweetAlert '다운로드 안내' 대기 -> 문구 입력")
-        swal_input = wait_visible(driver, SWAL_INPUT)
+        swal_input = wait_visible(driver, SWAL_INPUT, timeout=SWAL_WAIT_TIMEOUT)
         swal_input.clear()
         swal_input.send_keys(SWAL_CONFIRM_TEXT)
         time.sleep(0.3)
