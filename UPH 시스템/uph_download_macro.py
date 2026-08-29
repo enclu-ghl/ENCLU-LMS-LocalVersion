@@ -4,7 +4,10 @@ UPH WMS 배송파일 자동 다운로드 매크로 (Selenium 기반)
 [동작 순서]
 1. 이지어드민(디버깅모드 크롬, 이미 로그인된 세션에 연결)에서
    주문/배송 -> 확장주문검색2(template=DS00) 진입
-2. 검색조건 설정: 발주일 = 오늘 ± 7일, 상태 = 송장+배송, 다운로드항목 = UPH현황
+2. 검색조건 설정: 기간=송장입력일 (START_OFFSET_DAYS~END_OFFSET_DAYS), 상태 = 송장+배송, 다운로드항목 = UPH현황
+   (2026-08-29부터 발주일 대신 송장입력일 기준으로 전환 — 발주일은 주문 시점일 뿐이라
+    실제 상태(송장/배송)가 언제 바뀌었는지와 안 맞아서, 발주일이 오래된 주문이 뒤늦게
+    상태가 바뀌면 놓치는 문제가 있었음. 아래 재확인 로직도 그래서 필요했던 것)
 3. 검색(F2) -> 다운로드(F6)
 4. 팝업 4단계 순차 처리
    ① 다운로드 변경 안내 -> 다운로드 신청
@@ -68,20 +71,22 @@ WAIT_TIMEOUT   = 15    # 요소/팝업 대기 시간(초)
 # 통과해서 그대로 WAIT_TIMEOUT을 쓰고, 이것만 늘린다.
 SWAL_WAIT_TIMEOUT = 45
 CLICK_DELAY    = 0.4   # 클릭 사이 딜레이(초)
-# 발주일 검색 범위: 시작(과거) / 종료(미래) 오프셋을 따로 둠.
-# 미래 방향은 발주일이 미래일 수 없으므로 0으로 고정 — 예전엔 ±7일(최대 15일치)을 매번
+# 송장입력일 검색 범위: 시작(과거) / 종료(미래) 오프셋을 따로 둠.
+# 미래 방향은 송장입력일이 미래일 수 없으므로 0으로 고정 — 예전엔 ±7일(최대 15일치)을 매번
 # 통째로 재조회해서 리포트 생성 자체가 느려지는 주된 원인이었음.
 # 과거 방향(START_OFFSET_DAYS)은 "미배송 상태로 실제로 며칠까지 밀릴 수 있는지"에 맞춰
 # 조정 필요 — 너무 좁히면 오래된 미배송 건의 상태 변화를 놓칠 수 있음.
-START_OFFSET_DAYS = -4   # 발주일 시작 = 오늘 - N일 (평시 1~2일, 행사기간 3~4일 지연 감안 — 특이사항은 별도 확인 or 추후 조정)
-END_OFFSET_DAYS   = 0    # 발주일 끝 = 오늘 (미래로 잡을 이유 없음)
+START_OFFSET_DAYS = -4   # 송장입력일 시작 = 오늘 - N일 (평시 1~2일, 행사기간 3~4일 지연 감안 — 특이사항은 별도 확인 or 추후 조정)
+END_OFFSET_DAYS   = 0    # 송장입력일 끝 = 오늘 (미래로 잡을 이유 없음)
 
 # ── 오래된 미배송 잔여 재확인(reconciliation) 설정 ──
-# 평소 회차는 발주일 -4일~오늘만 보기 때문에, 그보다 더 오래전에 발주됐는데 아직 '송장'
-# 상태로 잡혀있던 주문이 나중에 실제로 배송 처리돼도 그 변화를 영영 알 수 없는 문제가 있었음
-# (2026-08-05, 대시보드 '총 잔여'가 WMS 실제 '송장' 건수보다 계속 부풀려지는 버그로 발견 —
-#  발주일 -4일 밖으로 밀려난 주문은 이후 상태가 바뀌어도 재조회 대상에서 빠지기 때문).
-# 그래서 주기적으로 훨씬 넓은(오래된) 발주일 범위를 한 번씩 추가로 훑어서 상태 변화를 반영한다.
+# 평소 회차는 송장입력일 -4일~오늘만 보기 때문에, 그보다 더 오래전에 송장 처리됐는데
+# 아직 '송장' 상태로 잡혀있던 주문이 나중에 실제로 배송 처리돼도 그 변화를 영영 알 수
+# 없는 문제가 있었음 (2026-08-05, 대시보드 '총 잔여'가 WMS 실제 '송장' 건수보다 계속
+# 부풀려지는 버그로 발견 — 당시엔 발주일 기준이었음. 2026-08-29 송장입력일 기준으로
+# 바꿨지만, 이 재확인 로직 자체는 여전히 유효함(송장입력일 -4일 밖으로 밀려난 주문은
+# 이후 배송 상태로 바뀌어도 재조회 대상에서 빠지는 건 마찬가지이므로).
+# 그래서 주기적으로 훨씬 넓은(오래된) 송장입력일 범위를 한 번씩 추가로 훑어서 상태 변화를 반영한다.
 RECON_START_OFFSET_DAYS = -21                       # 재확인 조회 시작 = 오늘 - 21일
                                                      # (평시 1~2일, 행사기간 3~4일 지연 대비 넉넉한 3주 여유.
                                                      #  -60일은 다운로드량이 너무 많아 한 회차가 지나치게
@@ -108,6 +113,13 @@ BASELINE_FLAG_FILE = os.getenv("UPH_BASELINE_FLAG") or os.path.join(
 MENU_LINK_TEXT          = "확장주문검색2"
 START_DATE_INPUT        = "#start_date"
 END_DATE_INPUT          = "#end_date"
+# 기간 기준 — 예전엔 기본값(발주일)에 의존했다. 발주일은 주문 시점일 뿐이라 실제
+# 상태(송장/배송)가 언제 바뀌었는지와 안 맞아서, 발주일이 오래된 주문이 뒤늦게
+# 상태가 바뀌면 그 회차의 발주일 -N~0일 범위 밖이라 놓치는 문제가 있었다(그래서
+# 별도로 훨씬 넓은 범위를 재확인하는 로직이 필요했음). 송장입력일 기준으로 바꾸면
+# 상태가 바뀐 시점 자체를 직접 기준으로 잡아서 더 정확하다(2026-08-29 결정).
+DATE_TYPE_SELECT        = "select[name='date_type']"
+DATE_TYPE_VALUE_INVOICE = "trans_date"   # "송장입력일" — value 속성 기준(표시 텍스트에 앞뒤 공백이 있어 불안정함)
 STATUS_SELECT           = "select[name='status_sel']"
 STATUS_OPTION_TEXT_NORMAL   = "송장+배송"  # 평소 실행: 대기중+완료 둘 다 받아서 diffing
 STATUS_OPTION_TEXT_BASELINE = "송장"       # 최초 1회(기준선 설정): 아직 배송 안 된 대기 물량만
@@ -305,10 +317,15 @@ def set_search_conditions(driver, baseline=False, start_offset_days=None, end_of
     status_text = STATUS_OPTION_TEXT_BASELINE if baseline else STATUS_OPTION_TEXT_NORMAL
     start_offset = START_OFFSET_DAYS if start_offset_days is None else start_offset_days
     end_offset = END_OFFSET_DAYS if end_offset_days is None else end_offset_days
-    log(f"② 검색조건 설정 (발주일 {start_offset}일~{end_offset}일 / 상태={status_text} / 다운로드항목=UPH현황)")
+    log(f"② 검색조건 설정 (송장입력일 {start_offset}일~{end_offset}일 / 상태={status_text} / 다운로드항목=UPH현황)")
     today = datetime.now()
     start_str = (today + timedelta(days=start_offset)).strftime("%Y-%m-%d")
     end_str = (today + timedelta(days=end_offset)).strftime("%Y-%m-%d")
+
+    date_type_el = WebDriverWait(driver, WAIT_TIMEOUT).until(
+        EC.presence_of_element_located((By.CSS_SELECTOR, DATE_TYPE_SELECT))
+    )
+    Select(date_type_el).select_by_value(DATE_TYPE_VALUE_INVOICE)
 
     set_input_value(driver, START_DATE_INPUT, start_str)
     set_input_value(driver, END_DATE_INPUT, end_str)
@@ -323,7 +340,7 @@ def set_search_conditions(driver, baseline=False, start_offset_days=None, end_of
     )
     Select(dl_field_el).select_by_visible_text(DOWNLOAD_FIELD_TEXT)
 
-    log(f"    발주일: {start_str} ~ {end_str}")
+    log(f"    송장입력일: {start_str} ~ {end_str}")
 
 
 def click_search(driver):
@@ -725,7 +742,7 @@ def run_forever():
         is_recon_round = (not baseline_mode) and (time.time() - last_recon_time >= RECON_INTERVAL_SEC)
 
         if is_recon_round:
-            log(f"===== {round_no}회차 시작 (오래된 잔여 재확인 모드: 발주일 "
+            log(f"===== {round_no}회차 시작 (오래된 잔여 재확인 모드: 송장입력일 "
                 f"{RECON_START_OFFSET_DAYS}~{RECON_END_OFFSET_DAYS}일) =====")
         else:
             log(f"===== {round_no}회차 시작 {'(기준선 설정 모드)' if baseline_mode else ''} =====")
