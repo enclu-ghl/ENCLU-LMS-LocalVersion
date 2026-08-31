@@ -69,10 +69,11 @@ WAIT_TIMEOUT   = 15    # 요소/팝업 대기 시간(초)
 # 10배 이상)엔 서버 응답이 느려져서 이 팝업이 뜨는 데 15초를 넘기고, 반복 실패해서
 # 다운로드가 계속 밀리는 게 실사용에서 확인됨(2026-08-29). 팝업1/2는 항상 빠르게
 # 통과해서 그대로 WAIT_TIMEOUT을 쓰고, 이것만 늘린다.
-# 45초로 늘린 뒤에도 거의 매 회차(20회 연속) 계속 타임아웃 나는 게 확인돼서
-# (2026-08-31, 같은 시각 다운로드 준비 자체도 17분 넘게 걸린 회차 있었음 —
-# 서버가 지금 심하게 밀려있음) 대폭(180초)으로 다시 늘림.
-SWAL_WAIT_TIMEOUT = 180
+# 45초->180초로 늘려봤는데도 실패율이 그대로였음(2026-08-31) — "늦게 뜨는" 게
+# 아니라 요청 자체가 서버에서 씹혀서 아예 안 뜨는 상황으로 판단. 한 번 오래
+# 기다리는 대신 45초씩 짧게 끊어서 여러 번(DOWNLOAD_CLICK_MAX_ATTEMPTS) 재시도하는
+# 방식으로 바꿈 — 재요청 자체가 새로 성공할 기회를 준다.
+SWAL_WAIT_TIMEOUT = 45
 CLICK_DELAY    = 0.4   # 클릭 사이 딜레이(초)
 # 송장입력일 검색 범위: 시작(과거) / 종료(미래) 오프셋을 따로 둠.
 # 미래 방향은 송장입력일이 미래일 수 없으므로 0으로 고정 — 예전엔 ±7일(최대 15일치)을 매번
@@ -415,36 +416,54 @@ def clear_stray_popups(driver):
     return cleared
 
 
+DOWNLOAD_CLICK_MAX_ATTEMPTS = 3  # 팝업3(SweetAlert)이 안 뜨면 처음부터 다시 시도하는 횟수
+# ⚠️ 행사 극성수기(2026-08-31)에 팝업3 대기시간을 45초->180초로 늘려봤는데도 실패율이
+# 그대로였다 — 즉 "늦게 뜨는" 게 아니라 다운로드 요청 자체가 서버에서 씹혀서 팝업이
+# 아예 안 뜨는 상황으로 보인다(clear_stray_popups가 다음 회차 시작 시 "잔여 SweetAlert
+# 정리됨"을 남긴 적이 없었음 — 즉 뜬 채로 방치된 게 아니라 애초에 안 떴다는 뜻).
+# 무작정 오래 기다리는 대신, 짧게(45초) 기다리다 안 뜨면 다운로드(F6) 클릭부터 통째로
+# 다시 시도하는 방식으로 바꾼다 — 재요청 자체가 새로 성공할 기회를 여러 번 준다.
+
+
 def click_download_and_handle_popups(driver):
-    log("④ 다운로드(F6) 클릭")
-    safe_click(driver, DOWNLOAD_BUTTON)
-
     request_click_time = None  # 팝업3(SweetAlert 확인) 직후 실제 요청 등록 시점 근처로 잡음
-    try:
-        # 팝업1: 다운로드 변경 안내
-        log("    팝업1 '다운로드 변경 안내' 대기")
-        wait_visible(driver, POPUP_DOWNLOAD_INFO)
-        safe_click(driver, BTN_DOWNLOAD_INFO_APPLY)
 
-        # 팝업2: 개인정보 파기 안내
-        log("    팝업2 '개인정보 파기 안내' 대기")
-        wait_visible(driver, POPUP_PERSONAL_INFO)
-        safe_click(driver, BTN_PERSONAL_CONFIRM)
+    for attempt in range(1, DOWNLOAD_CLICK_MAX_ATTEMPTS + 1):
+        log(f"④ 다운로드(F6) 클릭 ({attempt}/{DOWNLOAD_CLICK_MAX_ATTEMPTS}회 시도)")
+        safe_click(driver, DOWNLOAD_BUTTON)
+        try:
+            # 팝업1: 다운로드 변경 안내
+            log("    팝업1 '다운로드 변경 안내' 대기")
+            wait_visible(driver, POPUP_DOWNLOAD_INFO)
+            safe_click(driver, BTN_DOWNLOAD_INFO_APPLY)
 
-        # 팝업3: SweetAlert 다운로드 안내 (문구 입력 필요)
-        log("    팝업3 SweetAlert '다운로드 안내' 대기 -> 문구 입력")
-        swal_input = wait_visible(driver, SWAL_INPUT, timeout=SWAL_WAIT_TIMEOUT)
-        swal_input.clear()
-        swal_input.send_keys(SWAL_CONFIRM_TEXT)
-        time.sleep(0.3)
-        safe_click(driver, SWAL_CONFIRM_BTN)
-        # 여기가 실제 서버 요청 등록에 가장 가까운 시점 (이 직후 '접수 안내' 팝업이 뜸)
-        request_click_time = datetime.now()
-    except Exception as e:
-        # 팝업 4단계 중간에 끊기면 다음 회차 시작 시 clear_stray_popups()가 정리를 시도하긴 하지만,
-        # 정확히 어느 팝업에서 끊겼는지 지금 바로 로그에 남겨둬야 나중에 원인 추적이 쉬움
-        log(f"    [ERR] 팝업 처리 도중 실패 (다음 회차 시작 시 자동 정리 시도됨): {e}")
-        raise
+            # 팝업2: 개인정보 파기 안내
+            log("    팝업2 '개인정보 파기 안내' 대기")
+            wait_visible(driver, POPUP_PERSONAL_INFO)
+            safe_click(driver, BTN_PERSONAL_CONFIRM)
+
+            # 팝업3: SweetAlert 다운로드 안내 (문구 입력 필요)
+            log("    팝업3 SweetAlert '다운로드 안내' 대기 -> 문구 입력")
+            swal_input = wait_visible(driver, SWAL_INPUT, timeout=SWAL_WAIT_TIMEOUT)
+            swal_input.clear()
+            swal_input.send_keys(SWAL_CONFIRM_TEXT)
+            time.sleep(0.3)
+            safe_click(driver, SWAL_CONFIRM_BTN)
+            # 여기가 실제 서버 요청 등록에 가장 가까운 시점 (이 직후 '접수 안내' 팝업이 뜸)
+            request_click_time = datetime.now()
+            break  # 성공 -> 재시도 루프 탈출
+        except Exception as e:
+            if attempt < DOWNLOAD_CLICK_MAX_ATTEMPTS:
+                log(f"    [WARN] 팝업 처리 실패 ({attempt}/{DOWNLOAD_CLICK_MAX_ATTEMPTS}회) — "
+                    f"정리하고 다운로드 클릭부터 재시도합니다: {e}")
+                clear_stray_popups(driver)
+                time.sleep(1.5)
+                continue
+            # 마지막 시도까지 실패 — 다음 회차 시작 시 clear_stray_popups()가 정리를 시도하긴
+            # 하지만, 정확히 어느 팝업에서 끊겼는지 지금 바로 로그에 남겨둬야 원인 추적이 쉬움
+            log(f"    [ERR] {DOWNLOAD_CLICK_MAX_ATTEMPTS}회 재시도해도 팝업 처리 실패 "
+                f"(다음 회차 시작 시 자동 정리 시도됨): {e}")
+            raise
 
     # 팝업4: 다운로드 접수 안내 -> 바로가기 (새 창 열림)
     log("    팝업4 '다운로드 접수 안내' 대기 -> 바로가기 클릭")
