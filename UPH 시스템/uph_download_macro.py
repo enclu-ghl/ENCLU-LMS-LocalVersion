@@ -31,6 +31,12 @@ UPH WMS 배송파일 자동 다운로드 매크로 (Selenium 기반)
 주의: 다운로드가 실제로 감시폴더에 떨어지려면, 이 스크립트가 붙는 디버그 크롬의
 chrome://settings/downloads 에서 다운로드 위치가 미리 감시폴더로 지정되어 있어야 함.
 
+⚠️ 2026-09-01부터: 검색조건의 CS 필터(order_cs_sel)를 "전체"로 명시 선택함
+(set_search_conditions 참고). 이 드롭다운은 화면 기본값이 "정상+교환"으로 selected돼
+있는데, 이걸 안 건드리면 회차마다 조용히 그 값으로 필터링되어 이미 취소/보류로 CS
+상태가 바뀐 주문이 검색 결과에서 통째로 빠져버린다 — 대시보드 총 잔여가 계속
+부풀려지던 버그의 근본 원인이었다.
+
 ⚠️ 2026-08-06부터: "내 요청" 행 판별을 다운로드관리자 목록의 맨 위 행으로 단순화함
 (find_my_request_row 참고). 이 방식은 로그인 계정이 이 매크로 전용(다른 직원/다른 화면과
 비공유)일 때만 안전하다 — 계정을 같이 쓰는 동안에는 다른 사람 요청이 위에 낄 수 있어 엉뚱한
@@ -141,6 +147,17 @@ DATE_TYPE_VALUE_DELIVERY = "trans_date_pos"   # "배송일"
 STATUS_SELECT           = "select[name='status_sel']"
 STATUS_OPTION_TEXT_NORMAL   = "송장+배송"  # 평소 실행: 대기중+완료 둘 다 받아서 diffing
 STATUS_OPTION_TEXT_BASELINE = "송장"       # 최초 1회(기준선 설정): 아직 배송 안 된 대기 물량만
+
+# CS(고객서비스) 필터 — 상태(status_sel)와는 별개의 드롭다운. 화면 기본값이
+# "정상+교환"(value=10)으로 selected 되어 있는데, 다운로드 매크로가 이 드롭다운을
+# 지금까지 한 번도 건드리지 않아서 회차마다 이 기본값으로 조용히 필터링되고 있었다
+# (2026-09-01 발견). 그 결과 이미 취소/보류로 CS 상태가 바뀐 주문은 날짜·상태 조건을
+# 아무리 잘 맞춰도 검색 결과 자체에 안 나타나서, 우리 DB에는 영원히 "정상"인 채로
+# 박제되고 총 잔여가 부풀려지는 근본 원인이었다. "전체"(value=0)로 명시 선택해서
+# 모든 CS 상태를 다 받아온다 — cs_status 필드로 취소/보류 여부는 어차피 diffing
+# 단계(watchdog_agent.py)에서 따로 걸러낸다.
+CS_SELECT               = "select[name='order_cs_sel']"
+CS_OPTION_VALUE_ALL     = "0"   # "전체"
 DOWNLOAD_FIELD_SELECT   = "#download_field"
 DOWNLOAD_FIELD_TEXT     = "UPH현황"
 SEARCH_BUTTON           = "#search"                # div#search (table_search_button)
@@ -340,7 +357,7 @@ DATE_TYPE_LABELS = {
 def set_search_conditions(driver, date_type_value, status_text, start_offset_days, end_offset_days):
     date_type_label = DATE_TYPE_LABELS.get(date_type_value, date_type_value)
     log(f"② 검색조건 설정 (기간={date_type_label} {start_offset_days}일~{end_offset_days}일 / "
-        f"상태={status_text} / 다운로드항목=UPH현황)")
+        f"상태={status_text} / CS=전체 / 다운로드항목=UPH현황)")
     today = datetime.now()
     start_str = (today + timedelta(days=start_offset_days)).strftime("%Y-%m-%d")
     end_str = (today + timedelta(days=end_offset_days)).strftime("%Y-%m-%d")
@@ -357,6 +374,11 @@ def set_search_conditions(driver, date_type_value, status_text, start_offset_day
         EC.presence_of_element_located((By.CSS_SELECTOR, STATUS_SELECT))
     )
     Select(status_el).select_by_visible_text(status_text)
+
+    cs_el = WebDriverWait(driver, WAIT_TIMEOUT).until(
+        EC.presence_of_element_located((By.CSS_SELECTOR, CS_SELECT))
+    )
+    Select(cs_el).select_by_value(CS_OPTION_VALUE_ALL)
 
     dl_field_el = WebDriverWait(driver, WAIT_TIMEOUT).until(
         EC.presence_of_element_located((By.CSS_SELECTOR, DOWNLOAD_FIELD_SELECT))
