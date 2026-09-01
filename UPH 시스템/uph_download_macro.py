@@ -11,9 +11,13 @@ UPH WMS 배송파일 자동 다운로드 매크로 (Selenium 기반)
     훑었다. 발주일/송장입력일 둘 다 "주문/송장이 언제 일어났는지"일 뿐이라 그 뒤에
     상태가 언제 바뀌었는지와는 안 맞았고, 그래서 오래된 건의 뒤늦은 상태변화를 놓치지
     않으려고 별도로 훨씬 넓은 범위를 재확인하는 로직이 따로 있었다. "그 상태로 바뀐
-    날짜"를 직접 기준으로 잡으면(송장입력일/배송일) 오늘 하루치만 봐도 되고 재확인
-    로직 자체가 필요 없어진다 — 행사 극성수기에 검색 결과가 누적되며 너무 커져서
-    서버가 못 버티는 문제도 같이 해결됨)
+    날짜"를 직접 기준으로 잡으면(송장입력일/배송일) 오늘 하루치만 봐도 되므로, 매
+    회차 부담은 이 방식으로 확 줄었다 — 행사 극성수기에 검색 결과가 누적되며 너무
+    커져서 서버가 못 버티는 문제는 이걸로 해결됨.
+    다만 취소/CS상태 변경/보류처럼 송장입력일도 배송일도 안 바뀌는 상태 변화는 위
+    두 조회로 절대 못 잡으므로, 재확인 로직 자체는 완전히 없앨 수 없었다 — 대신
+    RECON_INTERVAL_SEC(기본 6시간)마다 한 번씩만, 훨씬 가벼운 빈도로 되살렸다
+    (2026-09-01, 대시보드 '총 잔여' 부풀림 버그 발견 후 재도입).)
 3. 검색(F2) -> 다운로드(F6)
 4. 팝업 4단계 순차 처리
    ① 다운로드 변경 안내 -> 다운로드 신청
@@ -85,14 +89,28 @@ CLICK_DELAY    = 0.4   # 클릭 사이 딜레이(초)
 # ── 회차별 조회 범위 (2026-08-31 재설계) ──
 # "그 상태로 바뀐 날짜" 자체를 기준으로 조회하므로, 평소엔 오늘 하루(0~0일)만 보면
 # 된다 — 예전처럼 여러 날짜를 겹쳐서 매번 재조회할 필요가 없어져서, 검색 결과 크기가
-# 확 줄고(행사 극성수기에 서버가 못 버티던 문제 해소) 재확인(reconciliation) 로직도
-# 통째로 없앨 수 있었다.
+# 확 줄고(행사 극성수기에 서버가 못 버티던 문제 해소) 송장/배송 전환을 놓치던 문제도
+# 해소됐다.
 NORMAL_START_OFFSET_DAYS = 0    # 평소 회차: 오늘만
 NORMAL_END_OFFSET_DAYS   = 0
-# 기준선 설정(최초 1회)은 재확인 로직이 없어진 만큼, 그 시점까지 밀려있는 '송장' 대기
-# 물량을 한 번에 다 잡아둬야 한다 — 예전 재확인 범위(3주)를 그대로 재사용.
+# 기준선 설정(최초 1회)은 지금까지 밀려있는 '송장' 대기 물량을 한 번에 다 잡아둬야
+# 하므로 넉넉하게 3주를 훑는다.
 BASELINE_START_OFFSET_DAYS = -21
 BASELINE_END_OFFSET_DAYS   = 0
+
+# ── 오래된 미배송 잔여 재확인(reconciliation) — 2026-09-01 재도입 ──
+# 처음엔 "그 상태로 바뀐 날짜" 기준 조회 두 번(송장입력일/배송일, 둘 다 오늘)이면
+# 재확인이 통째로 필요 없다고 봤는데, **취소·CS상태 변경·보류처럼 송장입력일도
+# 배송일도 안 바뀌는 상태 변화**를 놓치는 구멍이 있었다 — 3일 전에 송장 처리된
+# 주문이 오늘 취소되면, 오늘 배송된 것도 오늘 송장 처리된 것도 아니라서 어느 조회에도
+# 안 걸려 DB에 옛 상태(취소 안 된 '송장')가 그대로 남고, 대시보드 '총 잔여'가
+# 실제보다 부풀려지는 문제가 실사용에서 확인됨(2026-09-01). 그래서 오래된 '송장'
+# 대기 건의 현재 상태를 주기적으로 다시 훑어서 갱신하는 재확인을 다시 넣는다 —
+# 다만 예전처럼 매일 하는 게 아니라(그럼 다시 서버 부담 문제로 돌아감) 몇 시간에
+# 한 번, 오늘은 정상 회차가 이미 훑으므로 어제까지만 대상으로 한다.
+RECON_START_OFFSET_DAYS = -21
+RECON_END_OFFSET_DAYS   = -1     # 오늘은 정상 회차(NORMAL_*)가 매번 훑으므로 제외
+RECON_INTERVAL_SEC = 6 * 60 * 60  # 6시간마다 한 번
 
 POLL_INTERVAL_SEC = 5   # 다운로드관리자 진척도 재확인 주기(초)
 LOOP_INTERVAL_SEC = 90  # 한 회차 끝나고 다음 회차 시작까지 대기 시간(초)
@@ -748,9 +766,10 @@ def run_forever():
     진행된다.
 
     평소 회차는 "그 상태로 바뀐 날짜"를 직접 기준으로 오늘 하루치씩 두 번 조회한다
-    (송장입력일 기준 한 번 + 배송일 기준 한 번, 2026-08-31 재설계) — 예전처럼 발주일/
-    송장입력일 하나만으로 여러 날짜를 겹쳐 훑거나 별도 재확인(reconciliation) 로직을
-    돌릴 필요가 없어졌다.
+    (송장입력일 기준 한 번 + 배송일 기준 한 번, 2026-08-31 재설계). 다만 취소·CS상태
+    변경·보류처럼 송장입력일도 배송일도 안 바뀌는 상태 변화는 이 두 조회로는 못 잡으므로,
+    RECON_INTERVAL_SEC마다 한 번씩 오래된(어제~3주 전) '송장' 대기 건의 현재 상태를
+    다시 훑는 재확인 조회를 세 번째로 추가한다(2026-09-01 재도입).
 
     이 매크로는 URL로 새로 접속하는 코드가 없다 (보안코드가 매번 바뀌어 로그인 자동화가
     안 되므로, 사람이 미리 로그인해둔 디버그 크롬 탭을 계속 재사용하는 구조). 그래서 탭/창이
@@ -763,9 +782,11 @@ def run_forever():
     consecutive_reconnect_failures = 0
     consecutive_menu_nav_failures = 0
     round_no = 0
+    last_recon_time = 0   # 아직 한 번도 재확인 안 함 -> 기준선 설정 끝나면 곧바로 1회 실행됨
     while True:
         round_no += 1
         baseline_mode = not os.path.exists(BASELINE_FLAG_FILE)
+        is_recon_round = (not baseline_mode) and (time.time() - last_recon_time >= RECON_INTERVAL_SEC)
 
         if baseline_mode:
             passes = [(DATE_TYPE_VALUE_INVOICE, STATUS_OPTION_TEXT_BASELINE,
@@ -778,7 +799,13 @@ def run_forever():
                 (DATE_TYPE_VALUE_DELIVERY, STATUS_OPTION_TEXT_NORMAL,
                  NORMAL_START_OFFSET_DAYS, NORMAL_END_OFFSET_DAYS),
             ]
-            log(f"===== {round_no}회차 시작 =====")
+            if is_recon_round:
+                passes.append((DATE_TYPE_VALUE_INVOICE, STATUS_OPTION_TEXT_NORMAL,
+                                RECON_START_OFFSET_DAYS, RECON_END_OFFSET_DAYS))
+                log(f"===== {round_no}회차 시작 (오래된 잔여 재확인 포함: 송장입력일 "
+                    f"{RECON_START_OFFSET_DAYS}~{RECON_END_OFFSET_DAYS}일) =====")
+            else:
+                log(f"===== {round_no}회차 시작 =====")
 
         try:
             round_success = True
@@ -797,6 +824,11 @@ def run_forever():
                     log(f"기준선 설정 완료 표시 파일 생성: {BASELINE_FLAG_FILE}")
             else:
                 log("[FAIL] 다운로드 매크로 비정상 종료")
+            if is_recon_round:
+                # 실패했더라도(round_success=False) 다음 재확인까지는 그대로 INTERVAL만큼
+                # 기다린다 — 매 회차마다 재시도하면 예전처럼 부하가 다시 쌓이는 문제로
+                # 돌아가므로, 실패는 다음 재확인 때 다시 훑히는 걸로 충분하다고 본다.
+                last_recon_time = time.time()
         except Exception as e:
             if _is_dead_session_error(e):
                 # 창/세션이 죽은 케이스는 스택트레이스 도배 없이 짧게만 남긴다 (반복 발생 시 로그가
@@ -830,6 +862,12 @@ def run_forever():
                 consecutive_menu_nav_failures = 0
                 log(f"[ERR] {round_no}회차 오류 발생: {e}")
                 log(traceback.format_exc())
+
+            if is_recon_round:
+                # 예외로 끝났어도 재확인은 "시도했다"로 치고 다음 INTERVAL까지 미룬다 —
+                # 그대로 두면 재연결/메뉴진입 실패가 반복될 때마다 매 회차 재확인을 또
+                # 끼워 넣으려 해서 정상 회차 부하까지 계속 키우게 된다.
+                last_recon_time = time.time()
 
         log(f"{LOOP_INTERVAL_SEC}초 대기 후 다음 회차 진행...")
         time.sleep(LOOP_INTERVAL_SEC)
