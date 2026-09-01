@@ -4,10 +4,16 @@ UPH WMS 배송파일 자동 다운로드 매크로 (Selenium 기반)
 [동작 순서]
 1. 이지어드민(디버깅모드 크롬, 이미 로그인된 세션에 연결)에서
    주문/배송 -> 확장주문검색2(template=DS00) 진입
-2. 검색조건 설정: 기간=송장입력일 (START_OFFSET_DAYS~END_OFFSET_DAYS), 상태 = 송장+배송, 다운로드항목 = UPH현황
-   (2026-08-29부터 발주일 대신 송장입력일 기준으로 전환 — 발주일은 주문 시점일 뿐이라
-    실제 상태(송장/배송)가 언제 바뀌었는지와 안 맞아서, 발주일이 오래된 주문이 뒤늦게
-    상태가 바뀌면 놓치는 문제가 있었음. 아래 재확인 로직도 그래서 필요했던 것)
+2. 검색조건 설정 — 회차마다 서로 다른 "기간" 기준으로 두 번 조회한다(2026-08-31 재설계):
+     ① 기간=송장입력일, 오늘 하루만, 상태=송장+배송 -> 오늘 새로 송장 처리된 건
+     ② 기간=배송일,   오늘 하루만, 상태=송장+배송 -> 오늘 새로 배송 확정된 건
+   (예전엔 발주일 -> 송장입력일 기준 하나만, 그것도 여러 날짜(-4~0일)를 매번 겹쳐서
+    훑었다. 발주일/송장입력일 둘 다 "주문/송장이 언제 일어났는지"일 뿐이라 그 뒤에
+    상태가 언제 바뀌었는지와는 안 맞았고, 그래서 오래된 건의 뒤늦은 상태변화를 놓치지
+    않으려고 별도로 훨씬 넓은 범위를 재확인하는 로직이 따로 있었다. "그 상태로 바뀐
+    날짜"를 직접 기준으로 잡으면(송장입력일/배송일) 오늘 하루치만 봐도 되고 재확인
+    로직 자체가 필요 없어진다 — 행사 극성수기에 검색 결과가 누적되며 너무 커져서
+    서버가 못 버티는 문제도 같이 해결됨)
 3. 검색(F2) -> 다운로드(F6)
 4. 팝업 4단계 순차 처리
    ① 다운로드 변경 안내 -> 다운로드 신청
@@ -75,28 +81,18 @@ WAIT_TIMEOUT   = 15    # 요소/팝업 대기 시간(초)
 # 방식으로 바꿈 — 재요청 자체가 새로 성공할 기회를 준다.
 SWAL_WAIT_TIMEOUT = 45
 CLICK_DELAY    = 0.4   # 클릭 사이 딜레이(초)
-# 송장입력일 검색 범위: 시작(과거) / 종료(미래) 오프셋을 따로 둠.
-# 미래 방향은 송장입력일이 미래일 수 없으므로 0으로 고정 — 예전엔 ±7일(최대 15일치)을 매번
-# 통째로 재조회해서 리포트 생성 자체가 느려지는 주된 원인이었음.
-# 과거 방향(START_OFFSET_DAYS)은 "미배송 상태로 실제로 며칠까지 밀릴 수 있는지"에 맞춰
-# 조정 필요 — 너무 좁히면 오래된 미배송 건의 상태 변화를 놓칠 수 있음.
-START_OFFSET_DAYS = -4   # 송장입력일 시작 = 오늘 - N일 (평시 1~2일, 행사기간 3~4일 지연 감안 — 특이사항은 별도 확인 or 추후 조정)
-END_OFFSET_DAYS   = 0    # 송장입력일 끝 = 오늘 (미래로 잡을 이유 없음)
 
-# ── 오래된 미배송 잔여 재확인(reconciliation) 설정 ──
-# 평소 회차는 송장입력일 -4일~오늘만 보기 때문에, 그보다 더 오래전에 송장 처리됐는데
-# 아직 '송장' 상태로 잡혀있던 주문이 나중에 실제로 배송 처리돼도 그 변화를 영영 알 수
-# 없는 문제가 있었음 (2026-08-05, 대시보드 '총 잔여'가 WMS 실제 '송장' 건수보다 계속
-# 부풀려지는 버그로 발견 — 당시엔 발주일 기준이었음. 2026-08-29 송장입력일 기준으로
-# 바꿨지만, 이 재확인 로직 자체는 여전히 유효함(송장입력일 -4일 밖으로 밀려난 주문은
-# 이후 배송 상태로 바뀌어도 재조회 대상에서 빠지는 건 마찬가지이므로).
-# 그래서 주기적으로 훨씬 넓은(오래된) 송장입력일 범위를 한 번씩 추가로 훑어서 상태 변화를 반영한다.
-RECON_START_OFFSET_DAYS = -21                       # 재확인 조회 시작 = 오늘 - 21일
-                                                     # (평시 1~2일, 행사기간 3~4일 지연 대비 넉넉한 3주 여유.
-                                                     #  -60일은 다운로드량이 너무 많아 한 회차가 지나치게
-                                                     #  오래 걸려서 -21일로 축소함, 2026-08-05)
-RECON_END_OFFSET_DAYS = START_OFFSET_DAYS - 1       # 평소 조회 범위 바로 앞까지 (겹치지 않게)
-RECON_INTERVAL_SEC = 6 * 60 * 60                    # 6시간마다 한 번씩 재확인 회차 실행
+# ── 회차별 조회 범위 (2026-08-31 재설계) ──
+# "그 상태로 바뀐 날짜" 자체를 기준으로 조회하므로, 평소엔 오늘 하루(0~0일)만 보면
+# 된다 — 예전처럼 여러 날짜를 겹쳐서 매번 재조회할 필요가 없어져서, 검색 결과 크기가
+# 확 줄고(행사 극성수기에 서버가 못 버티던 문제 해소) 재확인(reconciliation) 로직도
+# 통째로 없앨 수 있었다.
+NORMAL_START_OFFSET_DAYS = 0    # 평소 회차: 오늘만
+NORMAL_END_OFFSET_DAYS   = 0
+# 기준선 설정(최초 1회)은 재확인 로직이 없어진 만큼, 그 시점까지 밀려있는 '송장' 대기
+# 물량을 한 번에 다 잡아둬야 한다 — 예전 재확인 범위(3주)를 그대로 재사용.
+BASELINE_START_OFFSET_DAYS = -21
+BASELINE_END_OFFSET_DAYS   = 0
 
 POLL_INTERVAL_SEC = 5   # 다운로드관리자 진척도 재확인 주기(초)
 LOOP_INTERVAL_SEC = 90  # 한 회차 끝나고 다음 회차 시작까지 대기 시간(초)
@@ -117,13 +113,13 @@ BASELINE_FLAG_FILE = os.getenv("UPH_BASELINE_FLAG") or os.path.join(
 MENU_LINK_TEXT          = "확장주문검색2"
 START_DATE_INPUT        = "#start_date"
 END_DATE_INPUT          = "#end_date"
-# 기간 기준 — 예전엔 기본값(발주일)에 의존했다. 발주일은 주문 시점일 뿐이라 실제
-# 상태(송장/배송)가 언제 바뀌었는지와 안 맞아서, 발주일이 오래된 주문이 뒤늦게
-# 상태가 바뀌면 그 회차의 발주일 -N~0일 범위 밖이라 놓치는 문제가 있었다(그래서
-# 별도로 훨씬 넓은 범위를 재확인하는 로직이 필요했음). 송장입력일 기준으로 바꾸면
-# 상태가 바뀐 시점 자체를 직접 기준으로 잡아서 더 정확하다(2026-08-29 결정).
+# 기간 기준 — 예전엔 기본값(발주일)에 의존했다. 발주일/송장입력일은 그 자체가 상태
+# 변경 시점이 아니라서, 회차마다 여러 날짜를 겹쳐 훑거나 별도 재확인 로직이 필요했다.
+# "그 상태로 바뀐 날짜"를 직접 검색 기준으로 삼기 위해, 회차마다 이 값을 바꿔가며
+# 두 번 조회한다(송장입력일 한 번, 배송일 한 번) — set_search_conditions 참고.
 DATE_TYPE_SELECT        = "select[name='date_type']"
-DATE_TYPE_VALUE_INVOICE = "trans_date"   # "송장입력일" — value 속성 기준(표시 텍스트에 앞뒤 공백이 있어 불안정함)
+DATE_TYPE_VALUE_INVOICE  = "trans_date"       # "송장입력일" — value 속성 기준(표시 텍스트에 앞뒤 공백이 있어 불안정함)
+DATE_TYPE_VALUE_DELIVERY = "trans_date_pos"   # "배송일"
 STATUS_SELECT           = "select[name='status_sel']"
 STATUS_OPTION_TEXT_NORMAL   = "송장+배송"  # 평소 실행: 대기중+완료 둘 다 받아서 diffing
 STATUS_OPTION_TEXT_BASELINE = "송장"       # 최초 1회(기준선 설정): 아직 배송 안 된 대기 물량만
@@ -317,19 +313,24 @@ def goto_extended_order_search(driver):
     time.sleep(1.0)
 
 
-def set_search_conditions(driver, baseline=False, start_offset_days=None, end_offset_days=None):
-    status_text = STATUS_OPTION_TEXT_BASELINE if baseline else STATUS_OPTION_TEXT_NORMAL
-    start_offset = START_OFFSET_DAYS if start_offset_days is None else start_offset_days
-    end_offset = END_OFFSET_DAYS if end_offset_days is None else end_offset_days
-    log(f"② 검색조건 설정 (송장입력일 {start_offset}일~{end_offset}일 / 상태={status_text} / 다운로드항목=UPH현황)")
+DATE_TYPE_LABELS = {
+    DATE_TYPE_VALUE_INVOICE: "송장입력일",
+    DATE_TYPE_VALUE_DELIVERY: "배송일",
+}
+
+
+def set_search_conditions(driver, date_type_value, status_text, start_offset_days, end_offset_days):
+    date_type_label = DATE_TYPE_LABELS.get(date_type_value, date_type_value)
+    log(f"② 검색조건 설정 (기간={date_type_label} {start_offset_days}일~{end_offset_days}일 / "
+        f"상태={status_text} / 다운로드항목=UPH현황)")
     today = datetime.now()
-    start_str = (today + timedelta(days=start_offset)).strftime("%Y-%m-%d")
-    end_str = (today + timedelta(days=end_offset)).strftime("%Y-%m-%d")
+    start_str = (today + timedelta(days=start_offset_days)).strftime("%Y-%m-%d")
+    end_str = (today + timedelta(days=end_offset_days)).strftime("%Y-%m-%d")
 
     date_type_el = WebDriverWait(driver, WAIT_TIMEOUT).until(
         EC.presence_of_element_located((By.CSS_SELECTOR, DATE_TYPE_SELECT))
     )
-    Select(date_type_el).select_by_value(DATE_TYPE_VALUE_INVOICE)
+    Select(date_type_el).select_by_value(date_type_value)
 
     set_input_value(driver, START_DATE_INPUT, start_str)
     set_input_value(driver, END_DATE_INPUT, end_str)
@@ -344,7 +345,7 @@ def set_search_conditions(driver, baseline=False, start_offset_days=None, end_of
     )
     Select(dl_field_el).select_by_visible_text(DOWNLOAD_FIELD_TEXT)
 
-    log(f"    송장입력일: {start_str} ~ {end_str}")
+    log(f"    {date_type_label}: {start_str} ~ {end_str}")
 
 
 def click_search(driver):
@@ -636,7 +637,7 @@ def poll_download_manager(driver, new_handle, request_click_time):
 # ─────────────────────────────────────────
 #  실행 진입점
 # ─────────────────────────────────────────
-def run_download_macro(driver, baseline=False, start_offset_days=None, end_offset_days=None):
+def run_download_macro(driver, date_type_value, status_text, start_offset_days, end_offset_days):
     main_handle = driver.current_window_handle
     t0 = time.time()
 
@@ -644,8 +645,7 @@ def run_download_macro(driver, baseline=False, start_offset_days=None, end_offse
     clear_stray_popups(driver)
 
     goto_extended_order_search(driver)
-    set_search_conditions(driver, baseline=baseline,
-                           start_offset_days=start_offset_days, end_offset_days=end_offset_days)
+    set_search_conditions(driver, date_type_value, status_text, start_offset_days, end_offset_days)
     click_search(driver)
 
     new_handle, request_click_time = click_download_and_handle_popups(driver)
@@ -744,7 +744,13 @@ def _connect_driver():
 def run_forever():
     """브라우저에 한 번만 연결하고, 이후로는 계속 반복 실행 (제어판 등에서 계속 켜두는 용도).
     baseline 여부는 매 회차마다 플래그 파일 존재로 자동 판단하므로, 최초 1회는 자동으로
-    '기준선 설정'(상태=송장만)으로 처리되고 이후 회차부터는 평소 모드(송장+배송)로 진행된다.
+    '기준선 설정'(상태=송장만, 지난 3주 훑기)으로 처리되고 이후 회차부터는 평소 모드로
+    진행된다.
+
+    평소 회차는 "그 상태로 바뀐 날짜"를 직접 기준으로 오늘 하루치씩 두 번 조회한다
+    (송장입력일 기준 한 번 + 배송일 기준 한 번, 2026-08-31 재설계) — 예전처럼 발주일/
+    송장입력일 하나만으로 여러 날짜를 겹쳐 훑거나 별도 재확인(reconciliation) 로직을
+    돌릴 필요가 없어졌다.
 
     이 매크로는 URL로 새로 접속하는 코드가 없다 (보안코드가 매번 바뀌어 로그인 자동화가
     안 되므로, 사람이 미리 로그인해둔 디버그 크롬 탭을 계속 재사용하는 구조). 그래서 탭/창이
@@ -757,28 +763,33 @@ def run_forever():
     consecutive_reconnect_failures = 0
     consecutive_menu_nav_failures = 0
     round_no = 0
-    last_recon_time = 0   # 아직 한 번도 재확인 안 함 -> 기준선 설정 끝나면 곧바로 1회 실행됨
     while True:
         round_no += 1
         baseline_mode = not os.path.exists(BASELINE_FLAG_FILE)
-        is_recon_round = (not baseline_mode) and (time.time() - last_recon_time >= RECON_INTERVAL_SEC)
 
-        if is_recon_round:
-            log(f"===== {round_no}회차 시작 (오래된 잔여 재확인 모드: 송장입력일 "
-                f"{RECON_START_OFFSET_DAYS}~{RECON_END_OFFSET_DAYS}일) =====")
+        if baseline_mode:
+            passes = [(DATE_TYPE_VALUE_INVOICE, STATUS_OPTION_TEXT_BASELINE,
+                       BASELINE_START_OFFSET_DAYS, BASELINE_END_OFFSET_DAYS)]
+            log(f"===== {round_no}회차 시작 (기준선 설정 모드) =====")
         else:
-            log(f"===== {round_no}회차 시작 {'(기준선 설정 모드)' if baseline_mode else ''} =====")
+            passes = [
+                (DATE_TYPE_VALUE_INVOICE, STATUS_OPTION_TEXT_NORMAL,
+                 NORMAL_START_OFFSET_DAYS, NORMAL_END_OFFSET_DAYS),
+                (DATE_TYPE_VALUE_DELIVERY, STATUS_OPTION_TEXT_NORMAL,
+                 NORMAL_START_OFFSET_DAYS, NORMAL_END_OFFSET_DAYS),
+            ]
+            log(f"===== {round_no}회차 시작 =====")
 
         try:
-            if is_recon_round:
-                success = run_download_macro(driver, baseline=False,
-                                              start_offset_days=RECON_START_OFFSET_DAYS,
-                                              end_offset_days=RECON_END_OFFSET_DAYS)
-            else:
-                success = run_download_macro(driver, baseline=baseline_mode)
+            round_success = True
+            for date_type_value, status_text, start_off, end_off in passes:
+                label = DATE_TYPE_LABELS.get(date_type_value, date_type_value)
+                log(f"  --- {label} 기준 조회 ---")
+                ok = run_download_macro(driver, date_type_value, status_text, start_off, end_off)
+                round_success = round_success and ok
             consecutive_reconnect_failures = 0
             consecutive_menu_nav_failures = 0
-            if success:
+            if round_success:
                 log("[DONE] 다운로드 매크로 정상 완료")
                 if baseline_mode:
                     with open(BASELINE_FLAG_FILE, "w", encoding="utf-8") as f:
@@ -786,13 +797,7 @@ def run_forever():
                     log(f"기준선 설정 완료 표시 파일 생성: {BASELINE_FLAG_FILE}")
             else:
                 log("[FAIL] 다운로드 매크로 비정상 종료")
-            if is_recon_round:
-                # 성공/실패 여부와 무관하게 시각을 갱신 — 실패했다고 90초마다 무겁게 재시도하지 않고
-                # 다음 정규 주기(RECON_INTERVAL_SEC)에 다시 시도한다.
-                last_recon_time = time.time()
         except Exception as e:
-            if is_recon_round:
-                last_recon_time = time.time()
             if _is_dead_session_error(e):
                 # 창/세션이 죽은 케이스는 스택트레이스 도배 없이 짧게만 남긴다 (반복 발생 시 로그가
                 # 순식간에 수백 줄씩 불어나는 걸 방지).

@@ -665,8 +665,15 @@ def cleanup_old_downloads(folder, keep_n=KEEP_LATEST_FILES):
 # ══════════════════════════════════════════════════════════════
 # 폴더 감시 (직접 폴링)
 # ══════════════════════════════════════════════════════════════
-def find_latest_wms_file(folder):
-    """감시 폴더에서 가장 최근에 받은 WMS 파일 경로를 반환. 없으면 None."""
+def find_new_wms_files(folder, processed):
+    """감시 폴더에서 아직 처리 안 한 WMS 파일들을 오래된 순으로 반환.
+
+    ⚠️ 예전엔 '가장 최신 파일 하나만' 처리했다 — 다운로드 매크로가 매번 전체
+    스냅샷 하나만 만들 때는 그걸로 충분했다. 그런데 매크로가 회차당 서로 다른
+    기준(송장입력일/배송일)으로 파일을 2개씩 만들도록 바뀌면서(2026-08-31),
+    두 파일이 서로 다른(대부분 안 겹치는) 행을 담게 됐다 — 최신 것만 처리하면
+    먼저 받은 파일의 내용이 통째로 반영 안 된 채 사라지는 사고가 났을 것이다.
+    그래서 '아직 처리 안 한 파일 전부'를 오래된 순으로 처리하도록 바꿨다."""
     try:
         files = [
             os.path.join(folder, f) for f in os.listdir(folder)
@@ -675,10 +682,10 @@ def find_latest_wms_file(folder):
         ]
     except OSError as e:
         log.warning(f"감시 폴더 조회 실패: {e}")
-        return None
-    if not files:
-        return None
-    return max(files, key=os.path.getmtime)
+        return []
+    new_files = [f for f in files if f not in processed]
+    new_files.sort(key=os.path.getmtime)
+    return new_files
 
 
 def is_file_settled(filepath):
@@ -719,20 +726,28 @@ def main():
     # 이벤트 방식은 실제 감시를 담당하는 emitter 스레드가 조용히 죽어도 Observer 객체는
     # is_alive()=True를 계속 반환해서, "프로세스는 멀쩡한데 몇 시간째 새 파일을 하나도 처리
     # 안 하는" 상태를 자동으로 알아챌 수 없었다 (2026-08-06, 1~2시간씩 통째로 건너뛴 구간이
-    # 반복되던 걸 로그로 확인). 다운로드 파일은 매번 전체 스냅샷(1.7만 행 전량)이라 최신 파일
-    # 하나만 처리하면 충분하므로, 그냥 주기적으로 폴더를 훑어 가장 최신 파일을 처리한다.
-    # 이러면 감시가 멈추는 실패 모드 자체가 없고, 밀렸을 때도 중간 파일을 건너뛰고 최신 것으로
-    # 바로 따라잡는다.
-    last_processed = None
+    # 반복되던 걸 로그로 확인). 그래서 이벤트 대신 주기적으로 폴더를 직접 훑는다.
+    #
+    # ⚠️ v3 당시엔 다운로드 매크로가 매번 전체 스냅샷 하나만 만들어서 '최신 파일 하나만'
+    # 처리해도 충분했다. 2026-08-31 매크로가 회차당 서로 다른 기준(송장입력일/배송일)으로
+    # 파일을 2개씩 만들도록 바뀌면서 그 전제가 깨졌다 — 두 파일이 서로 다른(대부분 안
+    # 겹치는) 행을 담으므로, 최신 것만 보고 이전 걸 버리면 그 파일의 내용이 통째로
+    # 반영 안 된다. 그래서 '아직 처리 안 한 파일 전부'를 오래된 순으로 처리하도록 바꿨다.
+    processed_files = set()
     last_sku_agg = 0.0
     try:
         while True:
             try:
-                latest = find_latest_wms_file(WATCH_FOLDER)
-                if latest and latest != last_processed and is_file_settled(latest):
-                    process_file(latest, engine, cache_conn, dong_cache)
+                new_files = find_new_wms_files(WATCH_FOLDER, processed_files)
+                any_processed = False
+                for f in new_files:
+                    if not is_file_settled(f):
+                        continue  # 아직 다운로드 중일 수 있음 — 다음 폴링에서 재확인
+                    process_file(f, engine, cache_conn, dong_cache)
+                    processed_files.add(f)
+                    any_processed = True
+                if any_processed:
                     cleanup_old_downloads(WATCH_FOLDER)
-                    last_processed = latest
             except Exception:
                 log.exception("파일 처리 중 예외 발생 (감시는 계속 유지됨)")
 
