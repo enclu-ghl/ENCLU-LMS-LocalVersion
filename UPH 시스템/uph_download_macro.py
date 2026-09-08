@@ -116,7 +116,7 @@ BASELINE_END_OFFSET_DAYS   = 0
 # 한 번, 오늘은 정상 회차가 이미 훑으므로 어제까지만 대상으로 한다.
 RECON_START_OFFSET_DAYS = -21
 RECON_END_OFFSET_DAYS   = -1     # 오늘은 정상 회차(NORMAL_*)가 매번 훑으므로 제외
-RECON_INTERVAL_SEC = 6 * 60 * 60  # 6시간마다 한 번
+RECON_INTERVAL_SEC = int(3.5 * 24 * 60 * 60)  # 주 2회(3.5일마다 한 번) — 6시간 간격이 대시보드/DB 부담이 커서 완화(2026-09-05)
 
 POLL_INTERVAL_SEC = 5   # 다운로드관리자 진척도 재확인 주기(초)
 LOOP_INTERVAL_SEC = 90  # 한 회차 끝나고 다음 회차 시작까지 대기 시간(초)

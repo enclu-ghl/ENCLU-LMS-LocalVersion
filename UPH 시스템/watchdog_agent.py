@@ -193,11 +193,14 @@ class DongMappingCache:
         return "".join(str(name).split())  # 모든 공백 제거
 
     def refresh(self):
+        # 실패해도 last_refresh를 갱신해 다음 정상 주기까지 재시도를 미룬다.
+        # (안 그러면 get() 호출마다, 즉 처리 중인 행 하나하나마다 즉시 재시도가
+        #  걸려서 DB가 이미 느릴 때 연결 시도가 폭주해 부하를 더 키운다 — 2026-09-08 확인)
+        self.last_refresh = time.time()
         try:
             with self.engine.connect() as conn:
                 rows = conn.execute(text("SELECT channel_name, dong FROM sales_channel_dong_mapping")).fetchall()
             self.mapping = {self._normalize(r.channel_name): r.dong for r in rows}
-            self.last_refresh = time.time()
             log.info(f"판매처→동 매핑 갱신 완료 ({len(self.mapping)}건)")
         except Exception as e:
             log.error(f"매핑 갱신 실패: {e}")
@@ -594,7 +597,7 @@ def push_to_db(engine, rows, chunk_size=300):
 # 원본이 사라져도 수요 예측에 쓸 이력은 계속 쌓인다.
 NOT_CANCELLED_SQL_WD = "cs_status NOT IN (" + ", ".join(f"'{v}'" for v in CANCELLED_CS_VALUES) + ")"
 
-SKU_AGG_INTERVAL_SEC = int(os.getenv("UPH_SKU_AGG_INTERVAL_SEC", "600"))   # 10분마다
+SKU_AGG_INTERVAL_SEC = int(os.getenv("UPH_SKU_AGG_INTERVAL_SEC", "3600"))   # 1시간마다 — DB 부하 완화(2026-09-05, t4g.nano 용량 문제로 10분→1시간)
 SKU_AGG_LOOKBACK_DAYS = 3   # 늦게 들어오는 배송확정 반영— 최근 며칠은 계속 다시 계산
 
 
