@@ -1283,12 +1283,32 @@ class BatchTab(ttk.Frame):
         self._refresh_usage_log(usage)
 
     def _refresh_tree(self):
-        self.tree.delete(*self.tree.get_children())
-        for b in self.batch_codes:
-            self.tree.insert("", "end", values=(
-                b.get("code", ""), b.get("remaining_qty", 0),
-                b.get("product_name", ""), b.get("gift", "")
-            ))
+        # 5초마다 자동 재조회(_poll)되는데, 그냥 새로 그리면 사용자가 방금 선택해둔
+        # 행이 매번 풀려서 "선택 → 값 수정 → 선택 수정" 흐름이 중간에 끊긴다
+        # (2026-09-08 신고: "선택 후 수정하려고 하면 선택이 풀린다"). 선택된 옵션코드를
+        # 기억해뒀다가 다시 그린 뒤 같은 코드를 재선택한다. 이때 on_select가 다시 불리면
+        # 입력칸에 방금 편집 중이던 값을 DB의 옛 값으로 덮어써버리므로, 재선택하는
+        # 동안은 이벤트를 잠깐 끊어둔다.
+        sel = self.tree.selection()
+        selected_code = self.tree.item(sel[0], "values")[0] if sel else None
+
+        self.tree.unbind("<<TreeviewSelect>>")
+        try:
+            self.tree.delete(*self.tree.get_children())
+            reselect_id = None
+            for b in self.batch_codes:
+                code = b.get("code", "")
+                item_id = self.tree.insert("", "end", values=(
+                    code, b.get("remaining_qty", 0),
+                    b.get("product_name", ""), b.get("gift", "")
+                ))
+                if selected_code is not None and code == selected_code:
+                    reselect_id = item_id
+            if reselect_id is not None:
+                self.tree.selection_set(reselect_id)
+                self.tree.see(reselect_id)
+        finally:
+            self.tree.bind("<<TreeviewSelect>>", self.on_select)
 
     def _refresh_usage_log(self, usage):
         self.log_tree.delete(*self.log_tree.get_children())
@@ -1707,9 +1727,25 @@ class AmazonUrlTab(ttk.Frame):
         self._refresh_tree()
 
     def _refresh_tree(self):
-        self.tree.delete(*self.tree.get_children())
-        for u in self.url_map:
-            self.tree.insert("", "end", values=(u.get("hscode", ""), u.get("asin", ""), u.get("url", "")))
+        # BatchTab과 동일한 이유(5초 폴링이 선택을 풀어버림)로 선택된 HSCODE를
+        # 기억했다가 재선택한다 — 자세한 배경은 BatchTab._refresh_tree 주석 참고.
+        sel = self.tree.selection()
+        selected_hscode = self.tree.item(sel[0], "values")[0] if sel else None
+
+        self.tree.unbind("<<TreeviewSelect>>")
+        try:
+            self.tree.delete(*self.tree.get_children())
+            reselect_id = None
+            for u in self.url_map:
+                hscode = u.get("hscode", "")
+                item_id = self.tree.insert("", "end", values=(hscode, u.get("asin", ""), u.get("url", "")))
+                if selected_hscode is not None and hscode == selected_hscode:
+                    reselect_id = item_id
+            if reselect_id is not None:
+                self.tree.selection_set(reselect_id)
+                self.tree.see(reselect_id)
+        finally:
+            self.tree.bind("<<TreeviewSelect>>", self.on_select)
 
     def on_select(self, event=None):
         sel = self.tree.selection()
