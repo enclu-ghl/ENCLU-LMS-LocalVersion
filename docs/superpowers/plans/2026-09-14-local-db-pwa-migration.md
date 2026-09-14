@@ -16,11 +16,35 @@ Streamlit, Tailscale, PWA(Web App Manifest + Service Worker)
 
 **Spec:** `docs/superpowers/specs/2026-09-14-local-db-pwa-migration-design.md`
 
+## 폴더 구조 (신규 — 기존 시스템은 그대로 둠)
+
+기존 `통합시스템\`(운영 중, 건드리지 않음) 옆에 **새 폴더를 git clone으로 만들어서** 그
+안에서 로컬 DB 전환 작업을 전부 진행한다. 검증 끝나고 전환할 준비가 되면, 그때 프로그램별로
+"구 폴더 끄고 → 신 폴더 켜기"로 스위치한다.
+
+```
+개발 진행 중인 물류 프로그램\
+├── 통합시스템\              ← 기존, 운영 중, 이번 작업 동안 안 건드림
+└── 통합시스템_로컬DB\        ← 신규, git clone, 이번 계획의 작업 공간
+    ├── (ENCLU-LMS-LocalVersion clone — UPH 시스템/주문파일정리/박스추천/허브런처)
+    └── 웹으로 진행 중인 건\   ← (ENCLU-LMS clone — app.py)
+```
+
+이 문서의 모든 태스크에서 `통합시스템\...` 경로는 실제로는 **`통합시스템_로컬DB\...`**
+기준이다 (Task 0에서 폴더를 만든 이후).
+
 ## Global Constraints
 
-- 실서비스 중단 없이 전환한다 — 각 프로그램은 개별적으로 로컬 DB로 옮기고, 문제 생기면
-  즉시 `.env`를 원래 Supabase/원격 Postgres URL로 되돌릴 수 있게 **되돌리기 경로를 항상
-  확보**한다 (커밋 전 `.env` 백업).
+- 기존 `통합시스템\`은 전환 완료 전까지 절대 수정하지 않는다 — 모든 작업은
+  `통합시스템_로컬DB\`에서 진행.
+- **UPH 시스템(watchdog/매크로)은 병행 운영 금지** — WMS를 셀레니움으로 직접 조작하는
+  크롤러라, 구·신 폴더를 동시에 띄우면 같은 WMS 세션/다운로드 폴더가 충돌한다. 전환은
+  반드시 "구 폴더 프로세스 종료 → 신 폴더 프로세스 시작" 한 번의 스위치로만 한다. 그 전까지
+  신 폴더 쪽은 라이브 크롤링 없이 DB 연결/저장 로직만 검증한다.
+- 나머지 프로그램(`app.py`, 주문파일정리, 박스추천)은 DB만 읽고 쓰므로 구·신 폴더를 동시에
+  띄워놓고 비교 테스트해도 안전하다.
+- 실서비스 중단 없이 전환한다 — 문제 생기면 신 폴더 프로세스만 끄고 구 폴더로 그대로
+  되돌리면 됨 (구 폴더가 안 건드려졌으므로 되돌리기가 항상 가능).
 - DB 비밀번호 등 민감정보는 코드에 하드코딩하지 않는다 — `.env` + `python-dotenv` 패턴 유지.
 - 로컬 PostgreSQL 비밀번호도 `.env`에 저장하고 `.gitignore` 대상 유지.
 - 각 단계는 이전 단계가 검증 통과해야 다음으로 진행 (순서 건너뛰지 않음).
@@ -28,7 +52,58 @@ Streamlit, Tailscale, PWA(Web App Manifest + Service Worker)
 
 ---
 
-## Phase 1 — 로컬 PostgreSQL 설치 + 백업 루틴 구축
+## Phase 1 — 새 폴더 준비 + 로컬 PostgreSQL 설치 + 백업 루틴 구축
+
+### Task 0: 신 폴더 git clone
+
+**Files:**
+- Create: `C:\Users\enclu\Desktop\개발 진행 중인 물류 프로그램\통합시스템_로컬DB\` (신규 폴더)
+
+**Interfaces:**
+- Produces: 기존 두 GitHub 저장소의 최신 커밋이 그대로 들어있는 새 로컬 작업 폴더
+
+- [ ] **Step 1: 상위 폴더로 이동 후 clone**
+
+Run:
+```powershell
+cd "C:\Users\enclu\Desktop\개발 진행 중인 물류 프로그램"
+git clone https://github.com/enclu-ghl/ENCLU-LMS-LocalVersion.git "통합시스템_로컬DB"
+```
+
+- [ ] **Step 2: app.py 저장소도 그 안에 같은 위치로 clone**
+
+기존 구조(`통합시스템\웹으로 진행 중인 건\`)와 동일하게 맞춘다:
+```powershell
+cd "C:\Users\enclu\Desktop\개발 진행 중인 물류 프로그램\통합시스템_로컬DB"
+git clone https://github.com/enclu-ghl/ENCLU-LMS.git "웹으로 진행 중인 건"
+```
+
+- [ ] **Step 3: 두 clone 모두 정상인지 확인**
+
+Run:
+```powershell
+cd "C:\Users\enclu\Desktop\개발 진행 중인 물류 프로그램\통합시스템_로컬DB"
+git status
+cd "웹으로 진행 중인 건"
+git status
+```
+Expected: 둘 다 `On branch main`, `nothing to commit, working tree clean`.
+
+- [ ] **Step 4: 기존 `.env` 파일들 복사 (git-ignored라 clone에는 없음)**
+
+각 프로그램 폴더(`UPH 시스템`, `주문파일정리 프로그램`, 박스추천프로그램, `웹으로 진행 중인 건`)의
+`.env`를 기존 `통합시스템\`의 대응 폴더에서 신 폴더로 그대로 복사 (지금은 Supabase/원격
+Postgres URL 그대로 — 이후 태스크에서 로컬 DB 정보 추가할 예정):
+```powershell
+Copy-Item "통합시스템\UPH 시스템\.env" "통합시스템_로컬DB\UPH 시스템\.env"
+Copy-Item "통합시스템\주문파일정리 프로그램\.env" "통합시스템_로컬DB\주문파일정리 프로그램\.env"
+Copy-Item "통합시스템\웹으로 진행 중인 건\.env" "통합시스템_로컬DB\웹으로 진행 중인 건\.env"
+```
+(박스추천프로그램의 `.env` 경로는 실행 직전에 실제 폴더 구조 확인 후 동일하게 복사)
+
+이 시점부터 이 문서의 `통합시스템\...` 경로는 전부 `통합시스템_로컬DB\...` 기준이다.
+
+---
 
 ### Task 1: PostgreSQL 설치 및 초기 설정
 
@@ -331,85 +406,130 @@ git commit -m "feat: Supabase/원격Postgres -> 로컬 DB 이전 검증 스크�
 
 ## Phase 3 — 프로그램별 순차 전환
 
-### Task 4: UPH 시스템 전환
+### Task 4: UPH 시스템 전환 (구 폴더 종료 → 신 폴더 시작, 단발 스위치)
 
 **Files:**
-- Modify: `통합시스템\UPH 시스템\.env`
+- Modify: `통합시스템_로컬DB\UPH 시스템\.env`
 
 **Interfaces:**
 - Consumes: Task 3에서 검증된 로컬 DB
-- Produces: `watchdog_agent.py`, `uph_download_macro.py`가 로컬 DB로 정상 동작
+- Produces: 신 폴더의 `watchdog_agent.py`, `uph_download_macro.py`가 로컬 DB로 정상 동작,
+  구 폴더 프로세스는 완전히 정지됨
 
-- [ ] **Step 1: `.env` 백업**
+⚠️ Global Constraints에 적힌 대로 **이 태스크는 병행 운영 없이 한 번에 스위치**한다.
+사전 준비(Step 1)는 구 폴더가 계속 돌아가는 상태에서 해도 되지만, Step 3(실제 스위치)는
+반드시 사용자에게 지금 진행해도 되는 타이밍인지 확인 후 실행한다 — 출고 작업 중이면
+잠깐이라도 데이터 수집이 끊기므로.
 
-Run:
-```powershell
-Copy-Item "통합시스템\UPH 시스템\.env" "통합시스템\UPH 시스템\.env.supabase_backup"
-```
-(되돌리기용 — 문제 생기면 이 파일로 즉시 원복)
+- [ ] **Step 1: 신 폴더 `.env`에 로컬 DB 연결 정보 추가 (구 폴더는 안 건드림)**
 
-- [ ] **Step 2: `DATABASE_URL`을 로컬로 교체**
-
-`통합시스템\UPH 시스템\.env`에서 기존 `DATABASE_URL=postgresql://postgres...supabase...`
-줄을 아래로 교체:
+`통합시스템_로컬DB\UPH 시스템\.env`에서 `DATABASE_URL` 줄을 로컬 DB로 교체:
 ```
 DATABASE_URL=postgresql://enclu_app:<Task1 비밀번호>@localhost:5432/enclu_scm
 ```
+(이 시점에 구 폴더 `통합시스템\UPH 시스템\.env`는 여전히 Supabase를 그대로 가리키고
+있고, 구 폴더 프로세스도 계속 돌아가는 중이어야 정상)
 
-- [ ] **Step 3: watchdog_agent.py 재시작 후 정상 동작 확인**
+- [ ] **Step 2: 신 폴더 쪽 무중단 드라이런 (라이브 크롤링 없이 DB 연결만 확인)**
 
-UPH 자동 제어판에서 `watchdog_agent.py` 패널 종료 → 시작. 이후:
 ```powershell
-Get-Content "통합시스템\UPH 시스템\uph_agent.log" -Tail 20
+& "C:\Users\enclu\AppData\Local\Python\pythoncore-3.14-64\python.exe" -c "
+import os
+from dotenv import load_dotenv
+load_dotenv(r'통합시스템_로컬DB\UPH 시스템\.env')
+from sqlalchemy import create_engine, text
+engine = create_engine(os.environ['DATABASE_URL'])
+with engine.connect() as conn:
+    print(conn.execute(text('SELECT COUNT(*) FROM order_status_log')).scalar())
+"
 ```
-Expected: `SSL connection`/`OperationalError` 등 연결 에러 없이 정상 폴링 로그 찍힘.
+Expected: Task 3에서 확인한 것과 같은 행수 출력 (신 폴더 코드가 로컬 DB를 정상적으로
+읽을 수 있음을 확인 — 아직 watchdog는 실행 안 함).
 
-- [ ] **Step 4: 실제 값 반영 확인 (round-trip 테스트)**
+- [ ] **Step 3: (사용자 확인 후) 실제 스위치 — 구 폴더 종료, 신 폴더 시작**
 
-로컬 DB에서 직접 최근 반영 건 확인:
+**지금 진행해도 되는지 먼저 확인받는다.** 확인되면:
+1. 구 폴더의 UPH 자동 제어판에서 `watchdog_agent.py`와 `uph_download_macro.py` 둘 다 종료
+2. 신 폴더(`통합시스템_로컬DB\UPH 시스템\`)에서 `uph_control_panel.py` 실행,
+   두 프로세스 시작
+
+- [ ] **Step 4: 정상 동작 확인**
+
+```powershell
+Get-Content "통합시스템_로컬DB\UPH 시스템\uph_agent.log" -Tail 20
+```
+Expected: 연결 에러 없이 정상 폴링 로그. 몇 분 뒤 로컬 DB에서 새 라운드가 실제 반영됐는지:
 ```powershell
 & "C:\Program Files\PostgreSQL\16\bin\psql.exe" -U enclu_app -h localhost -d enclu_scm `
     -c "SELECT COUNT(*), MAX(detected_at) FROM order_status_log;"
 ```
-Expected: 이전 단계에서 이전된 총 행수보다 같거나 큰 값 (새 라운드가 실제로 반영되고 있음).
+행수가 Step 2 때보다 늘어나 있으면 정상.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: 문제 생기면 즉시 롤백**
+
+신 폴더 쪽에서 에러 나거나 이상하면: 신 폴더 프로세스 종료 → 구 폴더 `uph_control_panel.py`로
+그대로 재시작 (구 폴더는 한 번도 안 건드렸으므로 즉시 원상복구됨).
+
+- [ ] **Step 6: Commit**
 
 ```bash
-cd "통합시스템"
-git add "UPH 시스템/.env.supabase_backup"
-git commit -m "chore: UPH 시스템 로컬 DB 전환 (Supabase .env 백업 보관)"
+cd "통합시스템_로컬DB"
+git status  # .env는 git-ignored라 여기 안 걸리는지 확인
+git commit --allow-empty -m "chore: UPH 시스템 로컬 DB로 스위치 완료 ($(Get-Date -Format yyyy-MM-dd))"
 ```
-(`.env` 자체는 git-ignored라 커밋 안 됨 — 백업 파일도 마찬가지로 ignore 대상인지 확인,
-비밀번호 든 파일이 실수로 커밋되지 않게 `git status`로 재확인 후 add)
 
 ---
 
 ### Task 5: 주문파일정리 프로그램 전환
 
+이 프로그램은 DB만 읽고 쓰므로(WMS 직접 조작 없음) 구 폴더가 계속 돌아가는 상태에서
+신 폴더 쪽을 독립적으로 켜서 테스트해도 안전하다 — Task 4처럼 "정지 후 스위치"할 필요 없음.
+
 **Files:**
-- Modify: `통합시스템\주문파일정리 프로그램\.env`
+- Modify: `통합시스템_로컬DB\주문파일정리 프로그램\.env`
 
-- [ ] **Step 1: `.env` 백업** (Task 4 Step 1과 동일한 방식)
-- [ ] **Step 2: `DATABASE_URL`을 로컬로 교체** (Task 4 Step 2와 동일한 값)
-- [ ] **Step 3: `file_splitter_gui.py` 재시작 후 일괄코드/아마존URL 탭 정상 조회되는지 확인**
+- [ ] **Step 1: 신 폴더 `.env`의 `DATABASE_URL`을 로컬로 교체**
 
-프로그램 실행 → "일괄 관리" 탭에서 목록이 뜨는지, "선택 수정"이 정상 동작하는지(이전에
-고친 선택 유지 기능 포함) 확인.
+```
+DATABASE_URL=postgresql://enclu_app:<Task1 비밀번호>@localhost:5432/enclu_scm
+```
+(구 폴더 `통합시스템\주문파일정리 프로그램\.env`는 그대로 Supabase — 안 건드림)
 
-- [ ] **Step 4: Commit** (Task 4 Step 5와 동일한 패턴)
+- [ ] **Step 2: 신 폴더의 `file_splitter_gui.py` 실행 후 정상 조회되는지 확인**
+
+`통합시스템_로컬DB\주문파일정리 프로그램\file_splitter_gui.py` 실행 → "일괄 관리" 탭에서
+목록이 뜨는지, "선택 수정"이 정상 동작하는지(선택 유지 기능 포함) 확인.
+
+- [ ] **Step 3: Commit**
+
+```bash
+cd "통합시스템_로컬DB"
+git commit --allow-empty -m "chore: 주문파일정리 프로그램 로컬 DB 연결 확인 완료"
+```
 
 ---
 
 ### Task 6: 박스추천프로그램 전환
 
-**Files:**
-- Modify: 박스추천프로그램의 `.env`
+이 프로그램도 DB만 읽고 쓰므로 Task 5와 같은 패턴 — 구 폴더는 안 건드리고 신 폴더에서
+독립적으로 진행한다.
 
-- [ ] **Step 1: `.env` 백업**
-- [ ] **Step 2: `DATABASE_URL`을 로컬로 교체**
+⚠️ **사전 확인 필요**: 박스추천프로그램의 정확한 `.env` 경로는 이번 계획 작성 시점에
+확인하지 못했다 — 이 태스크 시작 전에 `통합시스템_로컬DB\` 안에서 해당 폴더를 찾아
+`.env` 위치를 먼저 확인한다 (`Get-ChildItem -Recurse -Filter .env` 등으로 검색).
+
+**Files:**
+- Modify: 박스추천프로그램의 `.env` (신 폴더 기준, 정확한 경로는 Step 1에서 확인)
+
+- [ ] **Step 1: 박스추천프로그램 폴더 및 `.env` 경로 확인**
+
+```powershell
+Get-ChildItem "통합시스템_로컬DB" -Recurse -Filter ".env" | Select-Object FullName
+```
+
+- [ ] **Step 2: 찾은 `.env`의 `DATABASE_URL`을 로컬로 교체** (Task 5 Step 1과 같은 값)
 - [ ] **Step 3: 프로그램 실행 후 정상 동작 확인** — 박스 추천 계산 1건 실행해서 결과 나오는지 확인
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Commit** (Task 5 Step 3과 동일한 패턴)
 
 ---
 
