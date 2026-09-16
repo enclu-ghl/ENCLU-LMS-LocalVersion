@@ -822,9 +822,16 @@ def run_forever():
                  NORMAL_START_OFFSET_DAYS, NORMAL_END_OFFSET_DAYS),
             ]
             if is_recon_round:
+                # ⚠️ 2026-09-16: 송장입력일 레그 하나만 있어서, 송장입력일과 배송일이
+                # 며칠 벌어지는 주문(예: 송장 8/29, 실배송 9/3)이 계속 누락되는 게 실측
+                # 확인됨(WMS엔 배송완료로 있는데 우리 DB엔 12건 넘게 영구히 '송장' 상태로
+                # 멈춰있었음 — 배송일 기준으로 검색하면 바로 잡히는데 재확인이 그 조건을
+                # 아예 안 써서 놓치고 있었음). 평소 회차처럼 배송일 레그도 추가.
                 passes.append((DATE_TYPE_VALUE_INVOICE, STATUS_OPTION_TEXT_NORMAL,
                                 RECON_START_OFFSET_DAYS, RECON_END_OFFSET_DAYS))
-                log(f"===== {round_no}회차 시작 (오래된 잔여 재확인 포함: 송장입력일 "
+                passes.append((DATE_TYPE_VALUE_DELIVERY, STATUS_OPTION_TEXT_NORMAL,
+                                RECON_START_OFFSET_DAYS, RECON_END_OFFSET_DAYS))
+                log(f"===== {round_no}회차 시작 (오래된 잔여 재확인 포함: 송장입력일+배송일 "
                     f"{RECON_START_OFFSET_DAYS}~{RECON_END_OFFSET_DAYS}일) =====")
             else:
                 log(f"===== {round_no}회차 시작 =====")
