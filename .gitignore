@@ -46,3 +46,7 @@ config.json
 
 # Claude Code 개인 설정 (허용 목록) - 공개 저장소에 올리지 않는다
 .claude/settings.local.json
+
+# 로컬 DB 전환 작업물 — 백업 파일·DB 덤프는 용량이 크고 실제 운영 데이터라 커밋 안 함
+_local_db/backups/
+_local_db/*.sql
