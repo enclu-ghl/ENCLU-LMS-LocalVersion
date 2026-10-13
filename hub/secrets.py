@@ -27,14 +27,14 @@ FILENAME = "credentials.dat"
 #    다른 이름으로 저장하면 값이 환경변수에 들어가도 프로그램이 못 읽는다.
 FIELDS = {
     "DATABASE_URL": (
-        "Supabase 접속 URL",
-        "파일찢기 프로그램이 브랜드·일괄코드를 읽고 쓰는 데 씁니다.\n"
+        "DB 접속 URL",
+        "파일찢기·UPH 프로그램이 DB를 읽고 쓰는 데 씁니다. (서버 PC의 DB 주소, 관리자에게 받으세요)\n"
         "postgresql://... 형태로 시작합니다.",
         True,
     ),
-    "DB_HOST": ("박스추천 DB 호스트", "박스추천 프로그램용 PostgreSQL 주소입니다.", False),
+    "DB_HOST": ("박스추천 DB 호스트", "박스추천 프로그램용 PostgreSQL 주소입니다. (서버 PC 주소, 관리자에게 받으세요)", False),
     "DB_PORT": ("박스추천 DB 포트", "보통 5432입니다.", False),
-    "DB_NAME": ("박스추천 DB 이름", "보통 encluscm 입니다.", False),
+    "DB_NAME": ("박스추천 DB 이름", "관리자에게 받은 DB 이름을 입력하세요.", False),
     "DB_USER": ("박스추천 DB 계정", "", False),
     "DB_PASSWORD": ("박스추천 DB 비밀번호", "", True),
 }
