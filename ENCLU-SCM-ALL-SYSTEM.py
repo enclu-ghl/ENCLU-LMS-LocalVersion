@@ -19,6 +19,7 @@ DB 접속정보는 exe에 넣지 않는다 — 공개 릴리스라 그대로 유
 각 PC에서 최초 1회 입력받아 DPAPI로 암호화 저장한다 (hub/secrets.py).
 """
 
+import os
 import sys
 import tkinter as tk
 import webbrowser
@@ -32,14 +33,16 @@ from hub import updater
 
 VERSION = paths.read_version()
 
-# 웹 시스템 URL (재고조사 / 무게구간 계산 / UPH 현황판 — 같은 앱, 쿼리파라미터로 바로 진입)
-WEB_BASE_URL = "https://inventory-check-st2nrle3vdoyeqgb7hqitj.streamlit.app/"
-WEB_URLS = {
-    "inventory_web":  f"{WEB_BASE_URL}?system=inventory",
-    "weight_web":     f"{WEB_BASE_URL}?system=weight",
-    "uph_web":        f"{WEB_BASE_URL}?system=uph",
-    "supplies_mgmt":  f"{WEB_BASE_URL}?system=equipment",
-    "stock_alloc":    f"{WEB_BASE_URL}?system=alloc",
+# 웹 시스템 (재고조사 / 무게구간 / UPH 현황판 / 비품 / 재고할당 — 같은 앱, 쿼리파라미터로 바로 진입)
+# 2026-10-13 서버 PC 로컬 운영으로 전환. 기본은 사내 주소이고, 외부 직원은 config.json 의
+# "web_base_url" (예: Tailscale 주소 http://100.94.169.40:8501/) 또는 환경변수 ENCLU_WEB_BASE_URL 로 바꾼다.
+DEFAULT_WEB_BASE_URL = "http://192.168.0.46:8501/"
+WEB_SYSTEMS = {
+    "inventory_web": "inventory",
+    "weight_web":    "weight",
+    "uph_web":       "uph",
+    "supplies_mgmt": "equipment",
+    "stock_alloc":   "alloc",
 }
 
 # 업무 프로그램은 더 이상 subprocess로 외부 .py를 실행하지 않는다.
@@ -383,8 +386,15 @@ class HubApp:
         except tk.TclError:
             pass
 
+    def _web_url(self, key: str) -> str:
+        system = WEB_SYSTEMS.get(key)
+        if not system:
+            return ""
+        base = os.environ.get("ENCLU_WEB_BASE_URL") or self.cfg.get("web_base_url") or DEFAULT_WEB_BASE_URL
+        return f"{base.rstrip('/')}/?system={system}"
+
     def _launch_web(self, key: str, info: dict):
-        url = WEB_URLS.get(key, "")
+        url = self._web_url(key)
         if not url:
             messagebox.showerror("URL 없음",
                                  f"{info['title'].replace(chr(10), ' ')}의 웹 주소가 설정되지 않았습니다.",
