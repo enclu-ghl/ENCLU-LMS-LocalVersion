@@ -50,3 +50,6 @@ config.json
 # 로컬 DB 전환 작업물 — 백업 파일·DB 덤프는 용량이 크고 실제 운영 데이터라 커밋 안 함
 _local_db/backups/
 _local_db/*.sql
+
+# 전환 직전 캐시 백업 등 임시 산출물
+*.before_cutover
