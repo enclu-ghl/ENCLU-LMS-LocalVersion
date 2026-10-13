@@ -7,10 +7,14 @@ from sqlalchemy import create_engine, text
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-load_dotenv(ROOT.parent / "UPH 시스템" / ".env")
-SUPABASE_URL = os.environ["DATABASE_URL"]
+from dotenv import dotenv_values
+# 새 폴더의 UPH .env는 전환 후 로컬 URL이라 Supabase 원본은 구 폴더(또는 SUPABASE_URL 환경변수)에서 읽는다
+OLD_UPH_ENV = ROOT.parent.parent / "통합시스템" / "UPH 시스템" / ".env"
+SUPABASE_URL = os.environ.get("SUPABASE_URL") or dotenv_values(OLD_UPH_ENV).get("DATABASE_URL")
 load_dotenv(ROOT / ".env")
 LOCAL_URL = os.environ["LOCAL_DB_URL"]
+if not SUPABASE_URL or "supabase" not in SUPABASE_URL:
+    sys.exit(f"Supabase 접속정보를 찾지 못했거나 Supabase가 아닙니다 (구 폴더 .env 또는 SUPABASE_URL 확인): {OLD_UPH_ENV}")
 
 src = create_engine(SUPABASE_URL, connect_args={"connect_timeout": 15})
 dst = create_engine(LOCAL_URL)
