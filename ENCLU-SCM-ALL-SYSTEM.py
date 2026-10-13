@@ -35,7 +35,7 @@ VERSION = paths.read_version()
 
 # 웹 시스템 (재고조사 / 무게구간 / UPH 현황판 / 비품 / 재고할당 — 같은 앱, 쿼리파라미터로 바로 진입)
 # 2026-10-13 서버 PC 로컬 운영으로 전환. 기본은 사내 주소이고, 외부 직원은 config.json 의
-# "web_base_url" (예: Tailscale 주소 http://100.94.169.40:8501/) 또는 환경변수 ENCLU_WEB_BASE_URL 로 바꾼다.
+# "web_base_url" (예: Tailscale 주소) 또는 환경변수 ENCLU_WEB_BASE_URL 로 바꾼다.
 DEFAULT_WEB_BASE_URL = "http://192.168.0.46:8501/"
 WEB_SYSTEMS = {
     "inventory_web": "inventory",
