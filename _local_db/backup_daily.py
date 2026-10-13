@@ -18,8 +18,9 @@ load_dotenv(ROOT / ".env")
 PG_BIN = os.environ["PG_BIN"]
 LOCAL_DB_URL = os.environ["LOCAL_DB_URL"]
 KEEP_DAYS = int(os.getenv("BACKUP_KEEP_DAYS", "30"))
-BACKUP_DIR = ROOT / "backups"
-BACKUP_DIR.mkdir(exist_ok=True)
+# 백업은 DB가 있는 C:와 다른 물리 디스크(E:)에 두는 걸 권장 — .env의 BACKUP_DIR로 지정, 없으면 기존 위치
+BACKUP_DIR = Path(os.getenv("BACKUP_DIR") or (ROOT / "backups"))
+BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 
 # ⚠️ pg_dump에 URI를 통째로 넘기면 비밀번호에 '!' 같은 특수문자가 있을 때
 # Windows에서 "너무 많은 명령행 인자" 에러가 남(2026-09-17 확인). host/port/user/dbname을
