@@ -159,7 +159,9 @@ STATUS_OPTION_TEXT_BASELINE = "송장"       # 최초 1회(기준선 설정): �
 CS_SELECT               = "select[name='order_cs_sel']"
 CS_OPTION_VALUE_ALL     = "0"   # "전체"
 DOWNLOAD_FIELD_SELECT   = "#download_field"
-DOWNLOAD_FIELD_TEXT     = "UPH현황"
+# WMS '다운로드 항목' 드롭다운에서 고를 양식 이름. WMS에서 이름이 바뀌었을 때 코드 수정 없이
+# 환경변수 UPH_DOWNLOAD_FIELD_TEXT 로 바꿀 수 있다 (2026-10-14 양식이 사라져 멈춘 사고 이후).
+DOWNLOAD_FIELD_TEXT     = os.getenv("UPH_DOWNLOAD_FIELD_TEXT") or "UPH현황"
 SEARCH_BUTTON           = "#search"                # div#search (table_search_button)
 DOWNLOAD_BUTTON         = "#download"               # span#download
 
@@ -383,7 +385,14 @@ def set_search_conditions(driver, date_type_value, status_text, start_offset_day
     dl_field_el = WebDriverWait(driver, WAIT_TIMEOUT).until(
         EC.presence_of_element_located((By.CSS_SELECTOR, DOWNLOAD_FIELD_SELECT))
     )
-    Select(dl_field_el).select_by_visible_text(DOWNLOAD_FIELD_TEXT)
+    dl_select = Select(dl_field_el)
+    try:
+        dl_select.select_by_visible_text(DOWNLOAD_FIELD_TEXT)
+    except NoSuchElementException:
+        # 원인 파악용: WMS 쪽 양식이 지워졌는지/이름이 바뀌었는지/다른 계정인지 바로 보이게 목록을 남긴다
+        names = [o.text.strip() for o in dl_select.options]
+        log(f"[ERR] 다운로드 항목 '{DOWNLOAD_FIELD_TEXT}' 없음 — 현재 목록({len(names)}개): {names}")
+        raise
 
     log(f"    {date_type_label}: {start_str} ~ {end_str}")
 
