@@ -30,6 +30,9 @@ description: ENCLU SCM 물류통합시스템(허브 런처, UPH 시스템, 박�
   허브의 웹 카드 주소는 `config.json`의 `web_base_url` 또는 환경변수 `ENCLU_WEB_BASE_URL`.
 - **백업:** `_local_db/backup_daily.py`, 매일 03:00 예약작업, 저장 위치는 `.env`의 `BACKUP_DIR`(C:와 다른 디스크).
 - **릴리스:** 허브 exe는 GitHub Actions가 빌드해 Releases로 배포(`ENCLU_SCM.spec`, `version.txt`).
+- **`sqlalchemy<2.1` 고정을 풀지 말 것.** 2.1부터 `postgresql://`의 기본 드라이버가 psycopg(v3)라 psycopg2만 있는 환경에서 앱이 안 뜬다
+  (2026-10-06 Streamlit Cloud 장애). 웹앱은 고정돼 있고, 루트(exe 빌드) `requirements.txt`는 HANDOFF 위험 항목 참고.
+- Streamlit Cloud 앱이 아직 ENCLU-LMS 저장소를 본다 — `app.py` 푸시는 Cloud에도 반영된다.
 
 ## git 작업 원칙
 
@@ -53,6 +56,10 @@ description: ENCLU SCM 물류통합시스템(허브 런처, UPH 시스템, 박�
 2. `watchdog_agent.py` (v3, 폴링) — **아직 처리 안 한 파일 전부를 오래된 순서로** 읽는다(회차당 파일 2개가 서로 다른 행을 담으므로,
    최신 파일 하나만 처리하도록 바꾸면 한쪽 내용이 통째로 빠진다). 각 파일은 `merge_duplicate_rows()`로 (order_key, status) 단위 병합 → 캐시와 비교해 **CS·보류·수량이 바뀐 행만** `order_status_log`에 upsert(송장·배송 상태만). 바뀐 행은 `detected_at`도 갱신된다.
 3. `app.py` UPH 현황판 — `uph_get_order_counts()`가 송장번호 distinct 기준으로 5개 지표 계산.
+
+운영상 주의: 매크로는 WMS 다운로드 양식 이름 **`UPH현황`에 의존**한다(2026-10-14 양식 이름이 사라져 68회 실패 — 환경변수
+`UPH_DOWNLOAD_FIELD_TEXT`로 바꿀 수 있음). UPH 프로세스는 **허브의 자식 프로세스**라 허브를 닫으면 같이 멈춘다. UPH 자동화는 한 PC에서만.
+UPH 인시는 `manpower_log`를 `event_time` 순으로 계산하며 **마감 누락은 UPH를 부풀린다**.
 
 ## UPH 숫자가 이상할 때 진단하는 법
 

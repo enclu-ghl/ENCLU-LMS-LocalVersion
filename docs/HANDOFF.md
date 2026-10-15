@@ -23,6 +23,26 @@
 | 구 폴더 `통합시스템` | 미추적 `.agents/`, `_db_archive_backup/` 남음(롤백용, 손대지 않음) |
 | 미흡 | ~~프로젝트 가이드 스킬 낡은 서술(F4)~~ 2026-10-15 정리 / CI에 테스트 단계 없음 / Hermes 전체 흐름 미검증 / 직원 PC 실접속 미검증 |
 
+## ⚠️ 위험 — 허브 exe의 SQLAlchemy 버전 미고정 (2026-10-15 발견, 미조치)
+- 웹앱 `requirements.txt`는 `sqlalchemy<2.1`로 고정돼 있지만 **루트 `requirements.txt`(exe 빌드용)는 미고정**.
+- SQLAlchemy 2.1부터 `postgresql://`의 기본 드라이버가 psycopg(v3)로 바뀜 — psycopg2만 있으면 `No module named 'psycopg'` (임시 venv에 2.1.4 설치해 재현 확인).
+- exe 번들(`ENCLU_SCM.spec`)은 psycopg2만 포함. 주문파일정리는 `create_engine(DATABASE_URL)`(주소가 `postgresql://`)라 **2.1이 번들됐다면 직원 PC exe에서 파일찢기 DB 접속 실패**. 박스추천은 `postgresql+psycopg2://` 명시라 무관. 서버 PC는 소스 실행(2.0.51)이라 무관.
+- v1.3.19(2026-10-13 빌드)에 실제로 2.1이 들어갔는지는 CI 로그 미확인(`gh` 없음).
+- 조치안: 루트 `requirements.txt`에 `sqlalchemy<2.1` 고정(필요 시 파일찢기 URL을 `postgresql+psycopg2`로 정규화) → `version.txt` 상향 → main 푸시로 재빌드. **푸시·릴리스는 사용자 확인 필요.** 직원 PC 실접속 검증 전에 처리 권장.
+
+## 운영 지식 (이전 채팅 인수인계 문서에서 취합, 2026-10-15)
+원문은 저장소 밖 `개발 진행 중인 물류 프로그램\AX_인수인계\인수인계_2026-10-15.md`(내부 주소 포함 — 커밋 금지).
+- 서버 PC 한 대에 DB·웹앱·UPH·백업이 모두 있다. 꺼지면 전부 멈춤. 자동 로그인 미설정.
+- 웹앱은 예약작업이 창 없이 `start_local_server_task.bat` 실행(로그 `_local_db/streamlit_local.log`). 예약작업 재등록 시 `cmd.exe /c "경로"` 따옴표는 한 겹.
+- **Streamlit Cloud 앱이 아직 ENCLU-LMS 저장소를 본다** — `app.py` 푸시는 Cloud에도 반영(Cloud는 읽기 전용 Supabase라 저장 불가).
+- UPH: WMS 다운로드 양식 이름 **`UPH현황`에 의존**(2026-10-14 양식 이름이 사라져 매크로 68회 실패). `ad95fc4`(양식 이름 환경변수 `UPH_DOWNLOAD_FIELD_TEXT`·실패 시 목록 로그)는 미푸시, 적용하려면 매크로 재시작.
+- UPH 프로세스는 **허브의 자식 프로세스** — 허브를 닫으면 UPH도 멈춤. UPH 자동화는 한 PC에서만(전용 WMS 계정).
+- UPH 인시: `manpower_log`를 `event_time` 순으로 계산. **마감 누락은 UPH를 부풀린다.** 2026-10-12·13 일부 동 인원 기록 정정 필요(실제 시각·인원은 사용자 확인).
+- 완료건수 이력: 주문 로그는 2026-09-01부터, 그 이전은 `uph_historical_summary`(수기 업로드).
+- 함정: 한글 SQL을 `psql -c`로 넘기지 말 것(인코딩 깨짐 → UTF-8 파일 + `psql -f`) / `pg_dump`는 서버 버전 이상 클라이언트 필요(PG 17·18 설치 이유) / Bash 도구에서 `\\`가 `\`로 줄어듦 / 방화벽·계정 변경은 UAC 승인 필요.
+- 보안 권장(미실행): postgres 관리자 비밀번호 변경(과거 채팅 노출). 앱 로그인 화면 없음 — 사내망/Tailscale 보호에만 의존, 8501 포트포워딩 금지.
+- 기술 부채: Streamlit `use_container_width` deprecated(`width='stretch'`), `st.components.v1.html` → `st.iframe` 경고.
+
 ## 진행 중
 - **AX 개발 환경 구축** (브랜치 `ax/setup-v2`): 공통 규칙·Codex 지시/검토 스크립트 추가, WSL·Hermes 설치와 연결 시험까지 완료. Hermes 전체 흐름은 미검증.
   - [x] Codex CLI 설치·ChatGPT 로그인
@@ -44,13 +64,21 @@
   - [ ] 첫 실제 업무 과제: 일일 보고 샘플 1건의 입력 검증·계산·초안 (위 합성 샘플은 해당 안 됨)
   - 검증 기록: `reports/AX-20261014-03/plan-check.md`, `review.md`(Codex 검토), `review-check.md`(Claude 검토 검증)
 
-## 남은 일 (로컬DB 전환 후속)
-- 직원 접속주소 안내, PWA+HTTPS(`tailscale serve`)
-- 약 1주 관찰 → PC 밖 백업 사본 + 복원 테스트 → Supabase·Cloud 앱·박스추천 원격PG 해지 (되돌릴 수 없음, 그때 재확인)
+## 남은 일 (로컬DB 전환 후속, 인수인계 문서 우선순위 반영)
+1. **exe SQLAlchemy 고정 + 재릴리스**(위 위험 항목) → 그다음 **직원 PC 실접속 검증**(exe 설치 → DB 포트 연결 확인 → 접속정보 입력 → 파일찢기·박스추천 동작). 사용자가 직원 PC로 테스트 예정
+2. 인원 기록 정정: 2026-10-12·13 일부 동 마감 누락·기록 없음 (실제 시각·인원은 사용자 제공 필요)
+3. 미푸시 커밋 정리: `main`의 `ad95fc4`, `ax/setup-v2`의 AX 커밋들 — 병합·푸시·릴리스는 사용자 확인
+4. UPH 매크로 재시작(`ad95fc4` 적용)
+5. 가용성: 자동 로그인, 윈도우 업데이트 재부팅 방지, UPS, 서버 IP 고정(DHCP 예약), UPH 멈춤 알림(Hermes 후보)
+6. 보안: postgres 관리자 비밀번호 변경. (PG 17·18은 사용자 결정으로 유지 — 서비스 자체는 덤프 도구만 필요하므로 중지해도 됨)
+7. PWA(설치형) + HTTPS(`tailscale serve`), 직원 접속주소 안내·옛 Cloud 즐겨찾기 교체
+8. 인원 입력 UI 개선(시각 직접 입력, 몇 초 내 중복·마감 누락 경고)
+9. **2026-10-20 이후** 관찰 종료 → PC 밖 백업 사본(사용자: 주기 압축본 또는 노트북) + 복원 재확인 → Supabase·Cloud 앱·박스추천 원격PG 해지 (되돌릴 수 없음, 실행 시점에 재확인)
 - ~~`_local_db/verify_migration.py`가 비교 대상 URL을 별도로 받도록 수정~~ — 이미 반영돼 있음(`SUPABASE_URL` 환경변수 또는 구 폴더 `.env`), 2026-10-14 확인
-- 감사(AX-04) 수정: [x] F1 종료코드(AX-05, 테스트 `_local_db/tests/`) → [ ] F7/F6 → [ ] F2 → [ ] F3 · [x] F4(스킬 문서) → [ ] F5
+- 감사(AX-04) 수정: [x] F1 종료코드(AX-05, 테스트 `_local_db/tests/`) → [x] F7 현황판 조회 실패 경고·UPH 제외(AX-20261015-02, `app.py` **미커밋**, AppTest 10조건 통과) → [ ] F6 → [ ] F2 → [ ] F3 · [x] F4(스킬 문서) → [ ] F5
 - ~~프로젝트 가이드 스킬 Supabase 시절 서술 갱신~~ — 2026-10-15 완료(Supabase 서술 제거, 로컬 PG 기준·UPH 흐름·진단법 현행화, `.agents` 사본 동기화)
 
 ## 미해결 이슈
+- 웹앱 키오스크 '최근 완료' 티커 조회와 허브 카드 출고 수치는 DB 조회 실패 시 보호·경고가 없음(F7 범위 밖).
 - 파이프라인 건강 판단에 `MAX(detected_at)` 사용 금지 — 바뀐 행만 갱신되므로 조용한 시간대엔 멈춰 보임. `uph_agent.log`·다운로드 폴더 시각으로 판단 (스킬 문서 참고).
 - 보류: ④ 일자별 UPH C안(시각 직접 입력 + 연속입력 경고).
