@@ -6,7 +6,7 @@
 2. `docs/HANDOFF.md` — 현재 상태·진행 중 작업·다음 단계
 3. `docs/DECISIONS.md` — 확정된 결정과 사유
 4. `.claude/skills/enclu-scm-project-guide/SKILL.md` — 저장소 지도·버그 이력·진단법
-   (Supabase 관련 서술은 전환 이전 기록. 현재 운영 DB는 로컬 PostgreSQL이며 Supabase는 읽기 전용 동결)
+   (Codex용 동일 사본: `.agents/skills/enclu-scm-project-guide/SKILL.md` — 고칠 때 둘 다 맞춘다)
 
 ## Claude의 역할
 - 개발 담당. Codex가 만든 지시서(`reports/<작업번호>/plan.md`)와 검토(`review.md`)는

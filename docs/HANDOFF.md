@@ -21,7 +21,7 @@
 | 백업 | 매일 03:00 E: 디스크, 10/14 정상(결과 0) ✅. PC 밖 사본은 추후(주기적 압축본 또는 사용자 노트북 셋팅) |
 | 저장소 | `ax/setup-v2`: AX 커밋 2개 + F1 수정 미커밋. `main`: 미푸시 커밋 1개(`ad95fc4`). 웹앱 저장소(ENCLU-LMS) 깨끗 |
 | 구 폴더 `통합시스템` | 미추적 `.agents/`, `_db_archive_backup/` 남음(롤백용, 손대지 않음) |
-| 미흡 | 프로젝트 가이드 스킬의 Supabase·`detected_at` 서술 낡음(F4) / CI에 테스트 단계 없음 / Hermes 전체 흐름 미검증 / 직원 PC 실접속 미검증 |
+| 미흡 | ~~프로젝트 가이드 스킬 낡은 서술(F4)~~ 2026-10-15 정리 / CI에 테스트 단계 없음 / Hermes 전체 흐름 미검증 / 직원 PC 실접속 미검증 |
 
 ## 진행 중
 - **AX 개발 환경 구축** (브랜치 `ax/setup-v2`): 공통 규칙·Codex 지시/검토 스크립트 추가, WSL·Hermes 설치와 연결 시험까지 완료. Hermes 전체 흐름은 미검증.
@@ -48,9 +48,9 @@
 - 직원 접속주소 안내, PWA+HTTPS(`tailscale serve`)
 - 약 1주 관찰 → PC 밖 백업 사본 + 복원 테스트 → Supabase·Cloud 앱·박스추천 원격PG 해지 (되돌릴 수 없음, 그때 재확인)
 - ~~`_local_db/verify_migration.py`가 비교 대상 URL을 별도로 받도록 수정~~ — 이미 반영돼 있음(`SUPABASE_URL` 환경변수 또는 구 폴더 `.env`), 2026-10-14 확인
-- 감사(AX-04) 수정: [x] F1 종료코드(AX-05, 테스트 `_local_db/tests/`) → [ ] F7/F6 → [ ] F2 → [ ] F3·F4 → [ ] F5
-- 프로젝트 가이드 스킬(`.claude/skills/enclu-scm-project-guide`)의 Supabase 시절 서술 갱신
+- 감사(AX-04) 수정: [x] F1 종료코드(AX-05, 테스트 `_local_db/tests/`) → [ ] F7/F6 → [ ] F2 → [ ] F3 · [x] F4(스킬 문서) → [ ] F5
+- ~~프로젝트 가이드 스킬 Supabase 시절 서술 갱신~~ — 2026-10-15 완료(Supabase 서술 제거, 로컬 PG 기준·UPH 흐름·진단법 현행화, `.agents` 사본 동기화)
 
 ## 미해결 이슈
-- `detected_at` 은 UPSERT에서 갱신되지 않음 — 건강 판단에 `MAX(detected_at)` 사용 금지 (스킬 문서 참고).
+- 파이프라인 건강 판단에 `MAX(detected_at)` 사용 금지 — 바뀐 행만 갱신되므로 조용한 시간대엔 멈춰 보임. `uph_agent.log`·다운로드 폴더 시각으로 판단 (스킬 문서 참고).
 - 보류: ④ 일자별 UPH C안(시각 직접 입력 + 연속입력 경고).
