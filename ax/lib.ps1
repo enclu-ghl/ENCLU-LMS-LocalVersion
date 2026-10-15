@@ -7,13 +7,17 @@
 #   other = Codex failed for another reason
 # Full Codex output is kept next to $OutFile as *.log (ignored by git).
 
+# Encoding for text piped to native programs. Must be set at script scope (this file is dot-sourced):
+# assigning $OutputEncoding inside the function does NOT apply to the pipe in Windows PowerShell 5.1,
+# and Korean prompts reached Codex as '?' (found 2026-10-15).
+$global:OutputEncoding = New-Object System.Text.UTF8Encoding $false
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+
 function Invoke-Codex([string]$Prompt, [string]$OutFile, [string]$WorkDir) {
     $log = [IO.Path]::ChangeExtension($OutFile, '.log')
     # --ignore-user-config: skip ~/.codex/config.toml (Codex desktop app's elevated sandbox + browser/computer-use plugins).
     # Auth still works. Reviewer runs without external tools; unelevated restricted-token sandbox blocks writes.
     $CodexArgs = @('--ignore-user-config', '-c', 'windows.sandbox=unelevated')
-    $OutputEncoding = New-Object System.Text.UTF8Encoding $false
-    [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
 
     # Native stderr must not become a terminating error while we capture it.
     $prev = $ErrorActionPreference

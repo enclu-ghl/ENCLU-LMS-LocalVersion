@@ -120,6 +120,12 @@ RECON_INTERVAL_SEC = int(3.5 * 24 * 60 * 60)  # 주 2회(3.5일마다 한 번) �
 
 POLL_INTERVAL_SEC = 5   # 다운로드관리자 진척도 재확인 주기(초)
 LOOP_INTERVAL_SEC = 90  # 한 회차 끝나고 다음 회차 시작까지 대기 시간(초)
+# 반복 실패 자동 복구 (2026-10-15): 회차가 실패했거나 마지막 성공 후 이만큼 지나도록 성공이 없으면
+# 다음 회차 전에 로그인된 WMS 탭을 새로고침한다. 성공 없이 REFRESH_MAX_CONSECUTIVE번 새로고침해도
+# 안 되면 새로고침만 멈추고(회차는 계속) 사람 확인을 요청한다.
+REFRESH_AFTER_NO_SUCCESS_SEC = int(os.getenv("UPH_REFRESH_AFTER_SEC", "900"))  # 15분
+REFRESH_MAX_CONSECUTIVE = 3
+REFRESH_READY_TIMEOUT_SEC = 30
 # 행사 기간에는 물량이 많아 다운로드 준비가 오래 걸릴 수 있어 최대 시도 횟수 제한을 두지 않음
 # (100%가 될 때까지 무한정 폴링. 상태창 로그로 계속 진행상황을 확인할 수 있음)
 SWAL_CONFIRM_TEXT = "확인했습니다"
@@ -790,6 +796,104 @@ def _connect_driver():
     return driver
 
 
+class PageRefresher:
+    """반복 실패 시 로그인된 WMS 탭을 driver.refresh()로 새로고침해 페이지 상태를 초기화한다.
+
+    2026-10-15 10:20~13:3x, 다운로드(F6) 뒤 팝업3이 안 뜨는 실패가 같은 탭에서 몇 시간 이어졌다
+    (간헐적 성공). 이 매크로는 로그인 보안코드 때문에 URL로 새로 접속하지 않으므로, 할 수 있는 건
+    "같은 탭 새로고침"까지다 — 쿠키(로그인)는 유지된다. 서버 쪽 원인이면 효과가 없을 수 있어,
+    새로고침마다 번호를 붙이고 직후 회차 결과를 남겨 효과를 측정한다.
+    """
+
+    def __init__(self, clock=time.monotonic):
+        self.clock = clock
+        self.last_success = clock()      # 성공 이력이 없으면 프로세스 시작 시각부터 센다
+        self.failure_pending = False     # 직전 회차가 (세션 끊김이 아닌) 오류·실패로 끝남
+        self.consecutive = 0             # 전체 성공 없이 이어진 새로고침 횟수
+        self.refresh_id = 0
+        self.awaiting_result = None      # 결과를 아직 안 남긴 새로고침 번호
+        self.exhausted_logged = False
+        self.skip_next = False           # 세션 재연결 직후 첫 회차는 새로고침 판단을 건너뜀
+
+    def _report_result(self, outcome):
+        if self.awaiting_result is not None:
+            log(f"    [복구 새로고침#{self.awaiting_result}] 직후 회차 결과: {outcome}")
+            self.awaiting_result = None
+
+    def record_round(self, success):
+        """회차가 끝날 때 호출 — success는 그 회차의 모든 조회가 성공했는지."""
+        self._report_result("성공" if success else "실패")
+        if success:
+            self.last_success = self.clock()
+            self.failure_pending = False
+            self.consecutive = 0
+            self.exhausted_logged = False
+        else:
+            self.failure_pending = True
+
+    def record_dead_session(self):
+        """세션 끊김은 기존 재연결 경로가 처리 — 새로고침을 예약하지 않는다."""
+        self._report_result("세션 끊김(재연결 경로)")
+        self.failure_pending = False
+        self.skip_next = True  # 재연결로 탭을 새로 잡았으니 다음 회차에 바로 또 새로고침하지 않음
+
+    def reason(self):
+        if self.skip_next:
+            self.skip_next = False
+            return None
+        idle = self.clock() - self.last_success
+        if not self.failure_pending and idle < REFRESH_AFTER_NO_SUCCESS_SEC:
+            return None
+        if self.consecutive >= REFRESH_MAX_CONSECUTIVE:
+            if not self.exhausted_logged:
+                log(f"[ERR] 새로고침을 {REFRESH_MAX_CONSECUTIVE}번 해도 다운로드가 회복되지 않았습니다 — "
+                    "자동 새로고침을 멈춥니다(회차는 계속). 디버그 크롬의 WMS 화면을 직접 확인해 주세요.")
+                self.exhausted_logged = True
+            return None
+        if self.failure_pending:
+            return "직전 회차 실패"
+        return f"마지막 성공 후 {int(idle // 60)}분 동안 성공 없음"
+
+    def maybe_refresh(self, driver, wms_handle):
+        """필요하면 새로고침하고 True. 세션 끊김 예외는 호출자(기존 재연결 경로)로 그대로 올린다."""
+        why = self.reason()
+        if why is None:
+            return False
+        if not wms_handle or wms_handle not in driver.window_handles:
+            # 다른 창(다운로드관리자 등)을 새로고침하면 안 된다 — 원래 WMS 탭이 없으면 건너뛴다.
+            # 탭이 정말 닫혔다면 이후 조회에서 세션 오류로 잡혀 기존 재연결 경로가 처리한다.
+            log("[복구] 새로고침 대상인 원래 WMS 탭을 찾지 못해 이번엔 새로고침하지 않습니다")
+            return False
+        self.refresh_id += 1
+        self.consecutive += 1
+        self.failure_pending = False
+        self.awaiting_result = self.refresh_id
+        log(f"[복구] WMS 탭 새로고침#{self.refresh_id} — 사유: {why} "
+            f"(성공 없이 {self.consecutive}/{REFRESH_MAX_CONSECUTIVE}번째)")
+        driver.switch_to.window(wms_handle)  # 다운로드관리자 창이 아니라 원래 WMS 탭을 새로고침
+        driver.refresh()
+        if self._wait_wms_ready(driver):
+            log(f"    [복구 새로고침#{self.refresh_id}] WMS 화면 확인됨 — 이번 회차를 이어서 진행")
+        else:
+            # 로그인 화면 구조를 코드로 확신할 수 없어 '로그인 만료'라고 단정하지 않는다
+            log(f"[ERR] 새로고침#{self.refresh_id} 후 {REFRESH_READY_TIMEOUT_SEC}초 안에 WMS 화면(메뉴·다운로드 버튼)이 "
+                "확인되지 않았습니다 — 로그인 세션 만료 가능성. 디버그 크롬 창을 확인해 주세요.")
+        return True
+
+    @staticmethod
+    def _wait_wms_ready(driver):
+        def ready(d):
+            if d.execute_script("return document.readyState") != "complete":
+                return False
+            return bool(d.find_elements(By.CSS_SELECTOR, DOWNLOAD_BUTTON)
+                        or d.find_elements(By.LINK_TEXT, MENU_LINK_TEXT))
+        try:
+            WebDriverWait(driver, REFRESH_READY_TIMEOUT_SEC).until(ready)
+            return True
+        except TimeoutException:
+            return False
+
+
 def run_forever():
     """브라우저에 한 번만 연결하고, 이후로는 계속 반복 실행 (제어판 등에서 계속 켜두는 용도).
     baseline 여부는 매 회차마다 플래그 파일 존재로 자동 판단하므로, 최초 1회는 자동으로
@@ -809,6 +913,8 @@ def run_forever():
     """
     driver = _connect_driver()
     log(f"브라우저 연결됨: {driver.title}")
+    wms_handle = driver.current_window_handle  # 새로고침 대상 — 로그인된 원래 WMS 탭
+    refresher = PageRefresher()
 
     consecutive_reconnect_failures = 0
     consecutive_menu_nav_failures = 0
@@ -846,6 +952,15 @@ def run_forever():
                 log(f"===== {round_no}회차 시작 =====")
 
         try:
+            # 반복 실패 시에만 새로고침 (정상 연속 성공이면 아무것도 안 함). 새로고침 자체의 오류로
+            # 회차가 끝나면 재확인 일정이 3.5일 밀리므로 여기서 따로 잡는다 — 세션 끊김만 기존 재연결 경로로.
+            try:
+                refresher.maybe_refresh(driver, wms_handle)
+            except Exception as refresh_err:
+                if _is_dead_session_error(refresh_err):
+                    raise
+                log(f"[WARN] 복구 새로고침 중 오류 — 이번 회차는 그대로 진행합니다: "
+                    f"{type(refresh_err).__name__}: {refresh_err}")
             round_success = True
             for date_type_value, status_text, start_off, end_off in passes:
                 label = DATE_TYPE_LABELS.get(date_type_value, date_type_value)
@@ -854,6 +969,7 @@ def run_forever():
                 round_success = round_success and ok
             consecutive_reconnect_failures = 0
             consecutive_menu_nav_failures = 0
+            refresher.record_round(round_success)
             if round_success:
                 log("[DONE] 다운로드 매크로 정상 완료")
                 if baseline_mode:
@@ -869,6 +985,7 @@ def run_forever():
                 last_recon_time = time.time()
         except Exception as e:
             if _is_dead_session_error(e):
+                refresher.record_dead_session()
                 # 창/세션이 죽은 케이스는 스택트레이스 도배 없이 짧게만 남긴다 (반복 발생 시 로그가
                 # 순식간에 수백 줄씩 불어나는 걸 방지).
                 log(f"[ERR] {round_no}회차: 브라우저 창/세션이 끊긴 것으로 보입니다 ({type(e).__name__})")
@@ -879,6 +996,7 @@ def run_forever():
                     pass
                 try:
                     driver = _connect_driver()
+                    wms_handle = driver.current_window_handle
                     log(f"    [복구성공] 재연결됨: {driver.title}")
                     consecutive_reconnect_failures = 0
                 except Exception as reconnect_err:
@@ -888,6 +1006,7 @@ def run_forever():
                     log('    ⚠️ 다음 명령으로 디버그 크롬을 다시 켜고 이지어드민에 로그인해주세요:')
                     log('        chrome.exe --remote-debugging-port=9222 --user-data-dir="C:\\chrome-debug-profile"')
             elif _is_menu_nav_failure(e):
+                refresher.record_round(False)
                 consecutive_menu_nav_failures += 1
                 log(f"[ERR] {round_no}회차: 메뉴 진입에 실패했습니다 ({consecutive_menu_nav_failures}회 연속): {e}")
                 if consecutive_menu_nav_failures >= 2:
@@ -897,6 +1016,7 @@ def run_forever():
                 else:
                     log(traceback.format_exc())
             else:
+                refresher.record_round(False)
                 consecutive_menu_nav_failures = 0
                 log(f"[ERR] {round_no}회차 오류 발생: {e}")
                 log(traceback.format_exc())
