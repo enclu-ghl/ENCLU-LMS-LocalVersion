@@ -11,7 +11,7 @@ pandas
 openpyxl
 xlsxwriter
 xlrd                    # WMS가 내려주는 구형 .xls 읽기
-sqlalchemy
+sqlalchemy<2.1          # 2.1부터 postgresql:// 기본 드라이버가 psycopg(v3) — exe엔 psycopg2만 있어 접속 실패. 풀지 말 것
 psycopg2-binary
 python-dotenv
 

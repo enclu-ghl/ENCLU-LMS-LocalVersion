@@ -23,12 +23,13 @@
 | 구 폴더 `통합시스템` | 미추적 `.agents/`, `_db_archive_backup/` 남음(롤백용, 손대지 않음) |
 | 미흡 | ~~프로젝트 가이드 스킬 낡은 서술(F4)~~ 2026-10-15 정리 / CI에 테스트 단계 없음 / Hermes 전체 흐름 미검증 / 직원 PC 실접속 미검증 |
 
-## ⚠️ 위험 — 허브 exe의 SQLAlchemy 버전 미고정 (2026-10-15 발견, 미조치)
+## ⚠️ 위험 — 허브 exe의 SQLAlchemy 버전 미고정 (2026-10-15 발견 → 코드 조치 완료 AX-20261015-03, **릴리스 대기**)
 - 웹앱 `requirements.txt`는 `sqlalchemy<2.1`로 고정돼 있지만 **루트 `requirements.txt`(exe 빌드용)는 미고정**.
 - SQLAlchemy 2.1부터 `postgresql://`의 기본 드라이버가 psycopg(v3)로 바뀜 — psycopg2만 있으면 `No module named 'psycopg'` (임시 venv에 2.1.4 설치해 재현 확인).
 - exe 번들(`ENCLU_SCM.spec`)은 psycopg2만 포함. 주문파일정리는 `create_engine(DATABASE_URL)`(주소가 `postgresql://`)라 **2.1이 번들됐다면 직원 PC exe에서 파일찢기 DB 접속 실패**. 박스추천은 `postgresql+psycopg2://` 명시라 무관. 서버 PC는 소스 실행(2.0.51)이라 무관.
 - v1.3.19(2026-10-13 빌드)에 실제로 2.1이 들어갔는지는 CI 로그 미확인(`gh` 없음).
-- 조치안: 루트 `requirements.txt`에 `sqlalchemy<2.1` 고정(필요 시 파일찢기 URL을 `postgresql+psycopg2`로 정규화) → `version.txt` 상향 → main 푸시로 재빌드. **푸시·릴리스는 사용자 확인 필요.** 직원 PC 실접속 검증 전에 처리 권장.
+- **조치(AX-20261015-03)**: 루트 `requirements.txt`에 `sqlalchemy<2.1` 고정, 자가진단 `pg_driver`가 기본 드라이버까지 확인 → CI가 exe 자가진단에서 2.1 번들을 차단. **남은 것: `version.txt` 상향 + main 푸시로 재빌드(사용자 확인)**
+- (당초 조치안) 루트 `requirements.txt`에 `sqlalchemy<2.1` 고정(필요 시 파일찢기 URL을 `postgresql+psycopg2`로 정규화) → `version.txt` 상향 → main 푸시로 재빌드. **푸시·릴리스는 사용자 확인 필요.** 직원 PC 실접속 검증 전에 처리 권장.
 
 ## 운영 지식 (이전 채팅 인수인계 문서에서 취합, 2026-10-15)
 원문은 저장소 밖 `개발 진행 중인 물류 프로그램\AX_인수인계\인수인계_2026-10-15.md`(내부 주소 포함 — 커밋 금지).
@@ -65,7 +66,7 @@
   - 검증 기록: `reports/AX-20261014-03/plan-check.md`, `review.md`(Codex 검토), `review-check.md`(Claude 검토 검증)
 
 ## 남은 일 (로컬DB 전환 후속, 인수인계 문서 우선순위 반영)
-1. **exe SQLAlchemy 고정 + 재릴리스**(위 위험 항목) → 그다음 **직원 PC 실접속 검증**(exe 설치 → DB 포트 연결 확인 → 접속정보 입력 → 파일찢기·박스추천 동작). 사용자가 직원 PC로 테스트 예정
+1. **exe 재릴리스**(SQLAlchemy 고정은 코드 반영됨, 위 위험 항목) → 그다음 **직원 PC 실접속 검증**(exe 설치 → DB 포트 연결 확인 → 접속정보 입력 → 파일찢기·박스추천 동작). 사용자가 직원 PC로 테스트 예정
 2. 인원 기록 정정: 2026-10-12·13 일부 동 마감 누락·기록 없음 (실제 시각·인원은 사용자 제공 필요)
 3. 미푸시 커밋 정리: `main`의 `ad95fc4`, `ax/setup-v2`의 AX 커밋들 — 병합·푸시·릴리스는 사용자 확인
 4. UPH 매크로 재시작(`ad95fc4` 적용)

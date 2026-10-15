@@ -146,7 +146,18 @@ def _run_checks(rep: Report) -> None:
         # 아래 import만으로 그게 그대로 검증된다.
         import psycopg2  # noqa: F401
         from sqlalchemy.dialects.postgresql import psycopg2 as _dialect  # noqa: F401
-        return "PostgreSQL 드라이버·dialect 적재 성공"
+        # 파일찢기·UPH는 드라이버를 명시하지 않은 "postgresql" 주소를 쓴다. SQLAlchemy 2.1부터
+        # 그 기본 드라이버가 psycopg(v3)로 바뀌어, exe에 psycopg2만 있으면 접속 순간에 죽는다.
+        # 위 import만으로는 이걸 못 잡으므로 기본 드라이버가 무엇인지 직접 확인한다.
+        import sqlalchemy
+        from sqlalchemy.engine import URL
+        default_driver = URL.create("postgresql").get_dialect().driver
+        if default_driver != "psycopg2":
+            raise RuntimeError(
+                f"SQLAlchemy {sqlalchemy.__version__}의 postgresql 기본 드라이버가 "
+                f"'{default_driver}'입니다 — exe에는 psycopg2만 있어 파일찢기·UPH 접속이 실패합니다 "
+                f"(requirements.txt의 sqlalchemy<2.1 고정 확인)")
+        return f"PostgreSQL 드라이버·dialect 적재 성공 (SQLAlchemy {sqlalchemy.__version__}, 기본 드라이버 psycopg2)"
 
     def mpl_backend():
         """3D 시뮬레이션을 실제로 한 장 그려본다.
