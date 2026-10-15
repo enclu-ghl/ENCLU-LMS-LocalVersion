@@ -19,11 +19,6 @@ if (-not $Request) { Write-Error "give -Request or -RequestFile"; exit 1 }
 $template = Get-Content (Join-Path $PSScriptRoot 'prompts\plan.md') -Raw -Encoding UTF8
 $prompt = "$template`n`n[TaskId] $TaskId`n[Request]`n$Request`n"
 
-$OutputEncoding = New-Object System.Text.UTF8Encoding $false
-[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
-# --ignore-user-config: skip ~/.codex/config.toml (Codex desktop app's elevated sandbox + browser/computer-use plugins).
-# Auth still works. Reviewer runs without external tools; unelevated restricted-token sandbox blocks writes.
-$CodexArgs = @('--ignore-user-config', '-c', 'windows.sandbox=unelevated')
-$prompt | codex exec @CodexArgs --sandbox read-only -C $repo -o (Join-Path $outDir 'plan.md') -
-if ($LASTEXITCODE -ne 0) { Write-Error "codex exec failed (exit $LASTEXITCODE)"; exit $LASTEXITCODE }
+. (Join-Path $PSScriptRoot 'lib.ps1')
+Invoke-Codex $prompt (Join-Path $outDir 'plan.md') $repo   # exit 3 = Codex usage limit (see lib.ps1)
 Write-Host "saved: reports\$TaskId\plan.md"

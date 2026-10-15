@@ -45,10 +45,6 @@ $committed
 $working
 "@
 
-$OutputEncoding = New-Object System.Text.UTF8Encoding $false
-# --ignore-user-config: skip ~/.codex/config.toml (Codex desktop app's elevated sandbox + browser/computer-use plugins).
-# Auth still works. Reviewer runs without external tools; unelevated restricted-token sandbox blocks writes.
-$CodexArgs = @('--ignore-user-config', '-c', 'windows.sandbox=unelevated')
-$prompt | codex exec @CodexArgs --sandbox read-only -C $repo -o (Join-Path $outDir 'review.md') -
-if ($LASTEXITCODE -ne 0) { Write-Error "codex exec failed (exit $LASTEXITCODE)"; exit $LASTEXITCODE }
+. (Join-Path $PSScriptRoot 'lib.ps1')
+Invoke-Codex $prompt (Join-Path $outDir 'review.md') $repo   # exit 3 = Codex usage limit (see lib.ps1)
 Write-Host "saved: reports\$TaskId\review.md"
