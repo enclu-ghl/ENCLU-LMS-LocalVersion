@@ -78,6 +78,7 @@ POLL_INTERVAL_SEC = int(os.getenv("UPH_POLL_INTERVAL_SEC", "10"))       # 폴더
 MAPPING_REFRESH_SEC = int(os.getenv("UPH_MAPPING_REFRESH_SEC", "300"))  # 판매처→동 매핑 갱신 주기(초)
 FILE_STABLE_WAIT_SEC = 2   # 파일이 완전히 저장될 때까지 대기 (다운로드 도중 읽기 방지)
 KEEP_LATEST_FILES = int(os.getenv("UPH_KEEP_LATEST_FILES", "5"))  # 감시폴더에 최신 몇 개 파일만 남기고 정리할지
+READ_RETRY_MAX = int(os.getenv("UPH_READ_RETRY_MAX", "3"))  # 파일 읽기 실패 시 최대 시도 횟수(최초 포함, 폴링마다 1회)
 
 KST = timezone(timedelta(hours=9))
 
@@ -438,12 +439,18 @@ def merge_duplicate_rows(df, dong_cache):
 
 
 def process_file(filepath, engine, cache_conn, dong_cache):
+    """파일 하나를 읽어 바뀐 상태만 DB·캐시에 반영한다.
+
+    반환값: 파일 읽기에 실패했으면 False(호출부가 다음 폴링에서 재시도), 그 외 True.
+    True는 "읽기 재시도 대상이 아님"이라는 뜻이지 DB 반영 성공이 아니다 — DB 반영 실패분은
+    캐시를 갱신하지 않는 기존 방식으로 다음 파일에서 다시 잡힌다. 읽은 뒤 단계의 예외는 그대로 올린다.
+    """
     log.info(f"파일 처리 시작: {filepath}")
     try:
         df = read_wms_file(filepath)
     except Exception as e:
         log.error(f"파일 읽기 실패 ({filepath}): {e}")
-        return
+        return False
 
     log.info(f"총 {len(df):,}행 로드 완료 — diffing 시작")
 
@@ -484,7 +491,7 @@ def process_file(filepath, engine, cache_conn, dong_cache):
 
     if not changed_rows and not cache_updates:
         log.info("변경된 상태 없음 (신규 반영 대상 0건)")
-        return
+        return True
 
     unmapped = sorted({r["channel_name"] for r in changed_rows if r["dong"] is None})
     if unmapped:
@@ -518,6 +525,7 @@ def process_file(filepath, engine, cache_conn, dong_cache):
     skipped = len(cache_updates) - len(safe_cache_updates)
     if skipped:
         log.warning(f"DB 반영 실패로 캐시 갱신을 보류한 행: {skipped:,}건 (다음 폴링에서 재시도)")
+    return True
 
 
 def push_to_db(engine, rows, chunk_size=50):
@@ -656,10 +664,12 @@ def build_sku_daily_shipment(engine, date_from, date_to, chunk_size=2000):
     return len(rows)
 
 
-def cleanup_old_downloads(folder, keep_n=KEEP_LATEST_FILES):
+def cleanup_old_downloads(folder, keep_n=KEEP_LATEST_FILES, protected=()):
     """감시폴더에 WMS 다운로드 파일이 계속 쌓이는 것을 방지 — 수정시각(mtime) 기준
     최신 keep_n개만 남기고 나머지는 삭제한다. 이미 처리(diffing)까지 끝난 파일들이라
-    지워도 데이터 유실은 없음 (반영 결과는 이미 Supabase에 저장돼 있음)."""
+    지워도 데이터 유실은 없음 (반영 결과는 이미 DB에 저장돼 있음).
+    protected: 아직 처리 안 된 파일(읽기 재시도 대기·다운로드 중) — 오래됐어도 지우지 않는다.
+    그래서 일시적으로 keep_n개보다 많이 남을 수 있다."""
     try:
         files = [
             os.path.join(folder, f) for f in os.listdir(folder)
@@ -669,6 +679,8 @@ def cleanup_old_downloads(folder, keep_n=KEEP_LATEST_FILES):
             return
         files.sort(key=os.path.getmtime, reverse=True)  # 최신 파일이 앞으로 오게 정렬
         for old_file in files[keep_n:]:
+            if old_file in protected:
+                continue
             try:
                 os.remove(old_file)
                 log.info(f"오래된 다운로드 파일 정리: {os.path.basename(old_file)}")
@@ -750,6 +762,9 @@ def main():
     # 겹치는) 행을 담으므로, 최신 것만 보고 이전 걸 버리면 그 파일의 내용이 통째로
     # 반영 안 된다. 그래서 '아직 처리 안 한 파일 전부'를 오래된 순으로 처리하도록 바꿨다.
     processed_files = set()
+    # 읽기 실패 파일 → 지금까지 시도 횟수. 다운로드 직후 잠금·부분 저장 같은 일시적 실패를
+    # 다음 폴링에서 다시 읽기 위함. 예전엔 실패해도 processed로 넣어 재시작 전까지 영영 안 읽었다(감사 F6).
+    read_failures = {}
     last_sku_agg = 0.0
     try:
         while True:
@@ -758,12 +773,30 @@ def main():
                 any_processed = False
                 for f in new_files:
                     if not is_file_settled(f):
-                        continue  # 아직 다운로드 중일 수 있음 — 다음 폴링에서 재확인
-                    process_file(f, engine, cache_conn, dong_cache)
+                        # 아직 다운로드 중일 수 있음 — 다음 폴링에서 재확인. 뒤 파일들은 수정 시각이 더 새것이라
+                        # 먼저 반영하면 순서가 뒤집히므로(재시도 대기 파일 포함) 건너뛰지 않고 여기서 멈춘다.
+                        break
+                    if process_file(f, engine, cache_conn, dong_cache):
+                        read_failures.pop(f, None)
+                    else:
+                        tries = read_failures.get(f, 0) + 1
+                        if tries < READ_RETRY_MAX:
+                            read_failures[f] = tries
+                            log.warning(f"파일 읽기 실패 {tries}/{READ_RETRY_MAX}회 — 다음 폴링에서 재시도: "
+                                        f"{os.path.basename(f)}")
+                            # 더 새로운 파일은 이번 폴링에 처리하지 않는다. 새 파일을 먼저 반영한 뒤 이 파일을
+                            # 재시도하면, 같은 주문의 CS·보류·수량이 과거 값으로 되돌아간다(upsert가 파일 시각을
+                            # 보지 않음). 오래된 파일부터 순서대로 반영되도록 여기서 멈춘다.
+                            break
+                        read_failures.pop(f, None)
+                        log.error(f"파일 읽기 {tries}회 실패 — 재시도 중단. 이 파일의 변경분은 반영되지 않았습니다: "
+                                  f"{os.path.basename(f)}")
                     processed_files.add(f)
                     any_processed = True
                 if any_processed:
-                    cleanup_old_downloads(WATCH_FOLDER)
+                    # 이번 폴링에서 아직 처리 못 한 파일(재시도 대기·다운로드 중)은 지우지 않는다
+                    cleanup_old_downloads(WATCH_FOLDER,
+                                          protected={f for f in new_files if f not in processed_files})
             except Exception:
                 log.exception("파일 처리 중 예외 발생 (감시는 계속 유지됨)")
 
