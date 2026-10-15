@@ -63,9 +63,12 @@ class _Dbs:
         e = create_engine(url)
         is_file = url[len("sqlite:///"):] + ".is"
 
+        db_file = url[len("sqlite:///"):]
+
         @event.listens_for(e, "connect")
         def _attach(dbapi_con, _rec):
             dbapi_con.execute(f"ATTACH DATABASE '{is_file}' AS information_schema")
+            dbapi_con.execute(f"ATTACH DATABASE '{db_file}' AS public")  # "public"."테이블" 식별자용
 
         self.engines.append(e)
         return e
@@ -76,7 +79,13 @@ class _Dbs:
         self._tmp.cleanup()
 
 
-class Compare(unittest.TestCase):
+class _IdIndexed(unittest.TestCase):
+    """SQLite엔 pg_index가 없으므로 기본은 'id 인덱스 있음'으로 두고, 필요한 테스트만 바꾼다."""
+    def setUp(self):
+        self.enterContext(mock.patch.object(vm, "source_has_id_index", return_value=True))
+
+
+class Compare(_IdIndexed):
     def check(self, src_tables, dst_tables, strict=False):
         dbs = _Dbs(src_tables, dst_tables)
         buf = io.StringIO()
@@ -163,11 +172,45 @@ class Compare(unittest.TestCase):
         self.assertFalse(self._check_with_failure("local_dst"))
         self.assertIn("로컬 조회 실패", self.output)
 
+    def test_no_id_index_skips_source_min_max(self):
+        # Codex 사후 검토(중간): 인덱스 없는 id에 MIN/MAX를 보내지 않는다 → 'id 없음'과 같은 처리
+        seen = []
+        dbs = _Dbs({"log": 3}, {"log": [0, 1, 2, 3]})
+        try:
+            src = dbs.engine(dbs.src_url)
+            event.listen(src, "before_cursor_execute",
+                         lambda conn, cur, stmt, params, ctx, many: seen.append(stmt))
+            with mock.patch.object(vm, "source_has_id_index", return_value=False), \
+                 contextlib.redirect_stdout(io.StringIO()) as buf:
+                ok = vm.compare(src, dbs.engine(dbs.dst_url))
+        finally:
+            dbs.close()
+        self.assertTrue(ok)
+        self.assertIn("확인 못 함", buf.getvalue())
+        self.assertFalse(any("MIN(id)" in s for s in seen))
+
+    def test_queries_are_schema_qualified(self):
+        # Codex 사후 검토(중간): 데이터 조회는 "public".테이블로 — search_path의 동명 테이블과 섞이지 않게
+        seen = []
+        dbs = _Dbs({"log": 3}, {"log": [0, 1, 2, 3]})
+        try:
+            src, dst = dbs.engine(dbs.src_url), dbs.engine(dbs.dst_url)
+            for e in (src, dst):
+                event.listen(e, "before_cursor_execute",
+                             lambda conn, cur, stmt, params, ctx, many: seen.append(stmt))
+            with contextlib.redirect_stdout(io.StringIO()):
+                vm.compare(src, dst)
+        finally:
+            dbs.close()
+        data_q = [s for s in seen if "COUNT(*)" in s or "MIN(id)" in s]
+        self.assertTrue(data_q)
+        self.assertTrue(all('"public"."log"' in s for s in data_q), data_q)
+
     def test_source_receives_only_light_queries(self):
         # 지적 3: 원본에는 카탈로그·COUNT(*)·MIN/MAX(id)만 — 범위 COUNT 등은 로컬에서만
         allowed = re.compile(
             r"^\s*SELECT (tablename FROM pg_tables|column_name, data_type FROM information_schema\.columns"
-            r"|COUNT\(\*\) FROM \"[^\"]+\"\s*$|MIN\(id\), MAX\(id\) FROM \"[^\"]+\"\s*$)", re.S)
+            r"|COUNT\(\*\) FROM \"public\"\.\"[^\"]+\"\s*$|MIN\(id\), MAX\(id\) FROM \"public\"\.\"[^\"]+\"\s*$)", re.S)
         seen = []
         cases = [({"log": 3, "t": (2, {"code": "text"})}, {"log": [0, 1, 2, 3, 4], "t": (3, {"code": "text"})}),
                  ({"log": [0, 1, 2]}, {"log": [0, 2, 10]})]
@@ -186,7 +229,7 @@ class Compare(unittest.TestCase):
         self.assertEqual(bad, [])
 
 
-class MainExitCode(unittest.TestCase):
+class MainExitCode(_IdIndexed):
     def run_main(self, src_tables, dst_tables, argv=()):
         dbs = _Dbs(src_tables, dst_tables)
         env = {"SUPABASE_URL": dbs.src_url, "LOCAL_DB_URL": dbs.dst_url}

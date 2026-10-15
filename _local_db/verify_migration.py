@@ -17,8 +17,9 @@
     information_schema는 권한 있는 컬럼만 보여 주므로 권한 문제도 "컬럼 구성 다름"으로 나올 수 있다.
   - public 스키마의 테이블만 본다. 시퀀스 값·뷰·함수·트리거·RLS 정책은 비교하지 않는다.
 
-원본(Supabase)은 저사양이라 가벼운 쿼리만 보낸다: 카탈로그 조회, COUNT(*), id MIN/MAX(PK 인덱스 전제),
-쿼리당 시간 상한(SOURCE_STATEMENT_TIMEOUT). 범위 안 행수 세기는 대상(로컬)에서만 한다.
+원본(Supabase)은 저사양이라 가벼운 쿼리만 보낸다: 카탈로그 조회, COUNT(*), id MIN/MAX(카탈로그에서 id 인덱스를
+확인한 테이블만 — 인덱스가 없으면 범위 확인을 건너뛰고 "id 없음"과 같게 처리), 쿼리당 시간 상한(SOURCE_STATEMENT_TIMEOUT).
+범위 안 행수 세기는 대상(로컬)에서만 한다. 데이터 조회는 모두 "public".테이블로 스키마를 명시한다(search_path 영향 없음).
 
 사용: py verify_migration.py [--strict]
 종료코드: 실패 0건이면 0, 불일치·조회 실패가 있으면 1 (배치·스크립트에서 성공 여부 판단용).
@@ -51,16 +52,34 @@ def column_map(conn, table):
     return {r[0]: r[1] for r in rows}
 
 
+def qt(table):
+    """스키마를 명시한 안전한 테이블 식별자 — 다른 스키마의 동명 테이블과 섞이지 않게."""
+    return '"public"."' + table.replace('"', '""') + '"'
+
+
 def count_rows(conn, table):
-    return conn.execute(text(f'SELECT COUNT(*) FROM "{table}"')).scalar()
+    return conn.execute(text(f"SELECT COUNT(*) FROM {qt(table)}")).scalar()
+
+
+def source_has_id_index(src_conn, table):
+    """public.<table>의 id가 유효한 인덱스의 첫 컬럼인지 (MIN/MAX가 인덱스로 끝나는지) — 카탈로그만 조회."""
+    return src_conn.execute(text("""
+        SELECT EXISTS (
+            SELECT 1 FROM pg_index i
+            JOIN pg_class c ON c.oid = i.indrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = i.indkey[0]
+            WHERE n.nspname = 'public' AND c.relname = :t AND a.attname = 'id' AND i.indisvalid
+        )
+    """), {"t": table}).scalar()
 
 
 def source_id_range(src_conn, table):
-    return src_conn.execute(text(f'SELECT MIN(id), MAX(id) FROM "{table}"')).one()
+    return src_conn.execute(text(f"SELECT MIN(id), MAX(id) FROM {qt(table)}")).one()
 
 
 def target_rows_in_range(dst_conn, table, lo, hi):
-    return dst_conn.execute(text(f'SELECT COUNT(*) FROM "{table}" WHERE id BETWEEN :lo AND :hi'),
+    return dst_conn.execute(text(f"SELECT COUNT(*) FROM {qt(table)} WHERE id BETWEEN :lo AND :hi"),
                             {"lo": lo, "hi": hi}).scalar()
 
 
@@ -104,7 +123,8 @@ def compare(src, dst, strict=False):
             with src.connect() as s:
                 cols_src = column_map(s, t)
                 n_src = count_rows(s, t)
-                has_int_id = cols_src.get("id") in INT_TYPES
+                # 인덱스 없는 id에 MIN/MAX를 보내면 원본 전체 스캔이 되므로 확인된 경우만
+                has_int_id = cols_src.get("id") in INT_TYPES and source_has_id_index(s, t)
                 lo_hi = source_id_range(s, t) if has_int_id else None
             stage = "로컬"
             with dst.connect() as d:
