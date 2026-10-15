@@ -28,6 +28,10 @@ Claude Code·Codex·Hermes가 모두 이 문서를 같은 기준으로 따른다
 
 ## 3. 작업 흐름
 
+**요청 창구는 Claude Code 세션(이 저장소 폴더)이다** (2026-10-15 사용자 확정). Claude가 Codex를 불러 지시서·검토를 받는다.
+Codex가 Claude를 직접 호출하는 방식은 승인 확인창을 처리할 수 없고 맥락이 끊겨 기본 흐름으로 쓰지 않는다.
+Codex 앱에서 계획을 먼저 받은 경우 `reports/<작업번호>/plan.md`로 저장한 뒤 Claude 세션에 "<작업번호> 진행"으로 넘긴다.
+
 1. 사용자: 작업 목적·완료 조건 제시 → 작업번호 부여 (`AX-YYYYMMDD-NN`)
 2. Codex 지시: `ax\codex-plan.ps1 <작업번호> "<요청>"` → `reports/<작업번호>/plan.md`
 3. Claude: 지시서 검증 → `plan-check.md`
