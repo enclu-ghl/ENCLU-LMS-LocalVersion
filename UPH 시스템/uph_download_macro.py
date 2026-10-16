@@ -126,6 +126,22 @@ LOOP_INTERVAL_SEC = 90  # 한 회차 끝나고 다음 회차 시작까지 대기
 REFRESH_AFTER_NO_SUCCESS_SEC = int(os.getenv("UPH_REFRESH_AFTER_SEC", "900"))  # 15분
 REFRESH_MAX_CONSECUTIVE = 3
 REFRESH_READY_TIMEOUT_SEC = 30
+# 새로고침을 REFRESH_MAX_CONSECUTIVE번 해도 안 되면(예: reCAPTCHA 반복 — 잦은 요청을 봇으로 보는 차단일 수 있음)
+# 계속 90초마다 두드리지 않고 회차 간격을 늘린다. 전체 성공 시 원래 간격으로 돌아온다.
+EXHAUSTED_LOOP_INTERVAL_SEC = int(os.getenv("UPH_EXHAUSTED_LOOP_INTERVAL_SEC", "600"))
+
+
+def _positive_int_env(name, default):
+    try:
+        v = int(os.getenv(name, str(default)))
+        return v if v > 0 else default
+    except ValueError:
+        return default
+
+
+# 다운로드관리자에서 요청 하나를 기다리는 최대 시간. 예전엔 무제한이라, 처음 보는 상태(2026-10-16 "오류\nreCAPTCHA
+# 오류입니다…")가 나오자 같은 요청을 3시간 동안 6초마다 다시 조회했다. 성수기 긴 생성 시간을 고려해 넉넉히 30분.
+DOWNLOAD_POLL_TIMEOUT_SEC = _positive_int_env("UPH_DOWNLOAD_POLL_TIMEOUT_SEC", 1800)
 # 행사 기간에는 물량이 많아 다운로드 준비가 오래 걸릴 수 있어 최대 시도 횟수 제한을 두지 않음
 # (100%가 될 때까지 무한정 폴링. 상태창 로그로 계속 진행상황을 확인할 수 있음)
 SWAL_CONFIRM_TEXT = "확인했습니다"
@@ -577,19 +593,33 @@ def find_my_request_row(rows):
     return top_row, reqtime_text
 
 
+def _parse_download_status(status_text):
+    """상태 셀 → (첫 줄, 상세). 셀이 '오류\nreCAPTCHA 오류입니다…'처럼 여러 줄이면 첫 줄만 상태로 본다."""
+    lines = [s.strip() for s in (status_text or "").splitlines() if s.strip()]
+    if not lines:
+        return "", ""
+    return lines[0], " / ".join(lines[1:])
+
+
 def poll_download_manager(driver, new_handle, request_click_time):
-    log("⑤ 다운로드관리자 새 창에서 진척도 폴링 시작 (완료될 때까지 무한 대기)")
+    log(f"⑤ 다운로드관리자 새 창에서 진척도 폴링 시작 (최대 {DOWNLOAD_POLL_TIMEOUT_SEC // 60}분 대기)")
     log(f"    내 요청 클릭시각: {request_click_time:%Y-%m-%d %H:%M:%S} — "
         f"전용 계정 전제로 목록 맨 위 행을 내 요청으로 간주 (페이지 조건: '{EXPECTED_PAGE_TEXT}')")
     driver.switch_to.window(new_handle)
     time.sleep(1.0)
-    poll_start = time.time()
+    poll_start = time.monotonic()  # 시스템 시각 변경에 흔들리지 않게
 
     locked_reqtime_text = None  # 한 번 식별된 뒤로는 이 값으로 매 회차 재조회 (행 순서가 바뀌어도 안 흔들리게)
     attempt = 0
     consecutive_error = 0  # 서버가 이 요청을 '오류'로 반환하면 완료로 안 바뀌는 영구 실패다 — 무한 대기 방지
     while True:
         attempt += 1
+        waited = time.monotonic() - poll_start
+        if waited >= DOWNLOAD_POLL_TIMEOUT_SEC:
+            # 모든 재시도(목록 없음·행 못 찾음·셀 못 읽음·처리중) 경로가 여기를 지나므로 어떤 상태든 상한에서 끊긴다
+            log(f"    ❌ 다운로드 대기 상한 {DOWNLOAD_POLL_TIMEOUT_SEC // 60}분 초과 "
+                f"(요청시간={locked_reqtime_text}, {waited:.0f}초 경과) — 포기하고 다음 회차에서 다시 시도합니다.")
+            return False
         safe_click(driver, DLMGR_SEARCH_BUTTON)
         time.sleep(1.0)
 
@@ -647,33 +677,43 @@ def poll_download_manager(driver, new_handle, request_click_time):
                 time.sleep(POLL_INTERVAL_SEC)
                 continue
 
+        # 상태 셀을 먼저 읽는다 — 진척도 셀이 없어도 '오류'는 판정할 수 있어야 한다
         try:
             status_text = target_row.find_element(By.CSS_SELECTOR, DLMGR_STATUS_CELL).text.strip()
-            percent_text = target_row.find_element(By.CSS_SELECTOR, DLMGR_PERCENT_CELL).text.strip()
         except (NoSuchElementException, StaleElementReferenceException):
-            log(f"    [{attempt}회차] 상태/진척도 셀을 못 읽음, {POLL_INTERVAL_SEC}초 후 재시도")
+            consecutive_error = 0  # 관측 실패가 끼면 '연속' 오류가 아니다
+            log(f"    [{attempt}회차] 상태 셀을 못 읽음, {POLL_INTERVAL_SEC}초 후 재시도")
             time.sleep(POLL_INTERVAL_SEC)
             continue
+        try:
+            percent_text = target_row.find_element(By.CSS_SELECTOR, DLMGR_PERCENT_CELL).text.strip()
+        except (NoSuchElementException, StaleElementReferenceException):
+            percent_text = ""
 
-        elapsed = time.time() - poll_start
+        elapsed = time.monotonic() - poll_start
+        status_head, status_detail = _parse_download_status(status_text)
+        shown = status_head + (f" ({status_detail})" if status_detail else "")
         log(f"    [{attempt}회차, {elapsed:.0f}초 경과] 요청시간={locked_reqtime_text} "
-            f"상태={status_text} 진척도={percent_text}")
+            f"상태={shown} 진척도={percent_text}")
 
         # '오류'는 '아직 처리중'과 달리 그대로 둬도 '완료'로 바뀌지 않는 영구 실패 상태다.
         # 예전엔 이 상태를 못 알아채고 while True가 이걸 몇 시간이고 계속 재조회했다
         # (실제로 요청 하나를 9시간 넘게 폴링한 사고가 있었음, 2026-08-26~27). 2회
         # 연속으로 확인되면(혹시 모를 순간적인 표시 오류 방지) 바로 실패로 포기한다.
-        if status_text == "오류":
+        # ⚠️ 2026-10-16: 상태 셀이 "오류\nreCAPTCHA 오류입니다. 다시 시도해주세요."처럼 상세 문구와 함께 와서
+        # 정확히 "오류"와 비교하던 판정이 빗나갔다 → 3시간 무한 대기. 첫 줄로 판정한다.
+        if status_head == "오류":
             consecutive_error += 1
             if consecutive_error >= 2:
                 log(f"    ❌ 서버가 이 요청을 '오류' 상태로 반환했습니다 "
-                    f"(요청시간={locked_reqtime_text}, {elapsed:.0f}초 경과) — "
-                    "재시도해도 회복되지 않는 상태라 포기하고 다음 회차로 넘어갑니다.")
+                    f"(요청시간={locked_reqtime_text}, {elapsed:.0f}초 경과"
+                    + (f", 상세: {status_detail}" if status_detail else "") + ") — "
+                    "재시도해도 회복되지 않는 상태라 포기하고 다음 회차로 넘어갑니다(실패 회차 → 창 정리·새로고침).")
                 return False
         else:
             consecutive_error = 0
 
-        if status_text == "완료" and "100" in percent_text:
+        if status_head == "완료" and "100" in percent_text:
             log(f"    ✅ 다운로드 준비 완료(100%) 확인 (서버 생성 대기시간: {elapsed:.0f}초)")
             try:
                 link = target_row.find_element(By.CSS_SELECTOR, DLMGR_FILE_LINK)
@@ -854,8 +894,14 @@ class PageRefresher:
             return "직전 회차 실패"
         return f"마지막 성공 후 {int(idle // 60)}분 동안 성공 없음"
 
+    @property
+    def exhausted(self):
+        """성공 없이 새로고침 한도를 다 쓴 상태 — 회차 간격을 늘리는 데 쓴다."""
+        return self.consecutive >= REFRESH_MAX_CONSECUTIVE
+
     def maybe_refresh(self, driver, wms_handle):
-        """필요하면 새로고침하고 True. 세션 끊김 예외는 호출자(기존 재연결 경로)로 그대로 올린다."""
+        """필요하면 'WMS 탭만 남기고 다른 창을 닫은 뒤 WMS 탭 새로고침'을 하고 True.
+        세션 끊김 예외는 호출자(기존 재연결 경로)로 그대로 올린다."""
         why = self.reason()
         if why is None:
             return False
@@ -870,6 +916,9 @@ class PageRefresher:
         self.awaiting_result = self.refresh_id
         log(f"[복구] WMS 탭 새로고침#{self.refresh_id} — 사유: {why} "
             f"(성공 없이 {self.consecutive}/{REFRESH_MAX_CONSECUTIVE}번째)")
+        closed = self._close_other_windows(driver, wms_handle)
+        if closed:
+            log(f"    [복구 새로고침#{self.refresh_id}] 첫 페이지(WMS 탭)만 남기고 다른 창 {closed}개 닫음")
         driver.switch_to.window(wms_handle)  # 다운로드관리자 창이 아니라 원래 WMS 탭을 새로고침
         driver.refresh()
         if self._wait_wms_ready(driver):
@@ -879,6 +928,24 @@ class PageRefresher:
             log(f"[ERR] 새로고침#{self.refresh_id} 후 {REFRESH_READY_TIMEOUT_SEC}초 안에 WMS 화면(메뉴·다운로드 버튼)이 "
                 "확인되지 않았습니다 — 로그인 세션 만료 가능성. 디버그 크롬 창을 확인해 주세요.")
         return True
+
+    @staticmethod
+    def _close_other_windows(driver, wms_handle):
+        """WMS 탭 말고 이 브라우저 세션의 다른 창(다운로드관리자 등)을 닫는다. WMS 탭은 절대 닫지 않는다.
+        이미 사라진 창은 건너뛴다."""
+        closed = 0
+        for h in list(driver.window_handles):
+            if h == wms_handle:
+                continue
+            try:
+                driver.switch_to.window(h)
+                if driver.current_window_handle == wms_handle:  # 방어: 전환 실패로 WMS에 머물렀으면 닫지 않음
+                    continue
+                driver.close()
+                closed += 1
+            except Exception as e:
+                log(f"    [WARN] 창 정리 중 오류(건너뜀): {type(e).__name__}")
+        return closed
 
     @staticmethod
     def _wait_wms_ready(driver):
@@ -922,6 +989,7 @@ def run_forever():
     last_recon_time = 0   # 아직 한 번도 재확인 안 함 -> 기준선 설정 끝나면 곧바로 1회 실행됨
     while True:
         round_no += 1
+        recon_started = False  # 재확인 조회를 실제로 시작했는지 — 시작 못 했으면 재확인 일정을 미루지 않는다
         baseline_mode = not os.path.exists(BASELINE_FLAG_FILE)
         is_recon_round = (not baseline_mode) and (time.time() - last_recon_time >= RECON_INTERVAL_SEC)
 
@@ -954,6 +1022,10 @@ def run_forever():
         try:
             # 반복 실패 시에만 새로고침 (정상 연속 성공이면 아무것도 안 함). 새로고침 자체의 오류로
             # 회차가 끝나면 재확인 일정이 3.5일 밀리므로 여기서 따로 잡는다 — 세션 끊김만 기존 재연결 경로로.
+            # 매 회차 WMS 탭에서 시작한다 — clear_stray_popups()는 '현재 창' 말고 나머지를 닫으므로, 이전 회차가
+            # 다운로드관리자 창에 초점을 남긴 채 끝났으면 WMS 탭을 닫아버릴 수 있다.
+            if wms_handle in driver.window_handles and driver.current_window_handle != wms_handle:
+                driver.switch_to.window(wms_handle)
             try:
                 refresher.maybe_refresh(driver, wms_handle)
             except Exception as refresh_err:
@@ -962,11 +1034,18 @@ def run_forever():
                 log(f"[WARN] 복구 새로고침 중 오류 — 이번 회차는 그대로 진행합니다: "
                     f"{type(refresh_err).__name__}: {refresh_err}")
             round_success = True
-            for date_type_value, status_text, start_off, end_off in passes:
+            for pass_no, (date_type_value, status_text, start_off, end_off) in enumerate(passes):
                 label = DATE_TYPE_LABELS.get(date_type_value, date_type_value)
                 log(f"  --- {label} 기준 조회 ---")
+                if is_recon_round and pass_no >= 2:   # 3·4번째가 오래된 잔여 재확인 조회
+                    recon_started = True
                 ok = run_download_macro(driver, date_type_value, status_text, start_off, end_off)
                 round_success = round_success and ok
+                if not ok:
+                    # 어떤 오류든 남은 조회를 계속하지 않고 회차를 끝낸다 → 다음 회차 전에
+                    # '첫 페이지(WMS 탭)만 남기고 새로고침' 후 새로 시작 (2026-10-16 사용자 방침)
+                    log("    이 조회가 실패해 회차를 여기서 끝냅니다 — 다음 회차 전에 WMS 탭만 남기고 새로고침합니다.")
+                    break
             consecutive_reconnect_failures = 0
             consecutive_menu_nav_failures = 0
             refresher.record_round(round_success)
@@ -978,7 +1057,7 @@ def run_forever():
                     log(f"기준선 설정 완료 표시 파일 생성: {BASELINE_FLAG_FILE}")
             else:
                 log("[FAIL] 다운로드 매크로 비정상 종료")
-            if is_recon_round:
+            if is_recon_round and recon_started:
                 # 실패했더라도(round_success=False) 다음 재확인까지는 그대로 INTERVAL만큼
                 # 기다린다 — 매 회차마다 재시도하면 예전처럼 부하가 다시 쌓이는 문제로
                 # 돌아가므로, 실패는 다음 재확인 때 다시 훑히는 걸로 충분하다고 본다.
@@ -1021,14 +1100,18 @@ def run_forever():
                 log(f"[ERR] {round_no}회차 오류 발생: {e}")
                 log(traceback.format_exc())
 
-            if is_recon_round:
-                # 예외로 끝났어도 재확인은 "시도했다"로 치고 다음 INTERVAL까지 미룬다 —
+            if is_recon_round and recon_started:
+                # 예외로 끝났어도(재확인 조회를 시작했다면) "시도했다"로 치고 다음 INTERVAL까지 미룬다 —
                 # 그대로 두면 재연결/메뉴진입 실패가 반복될 때마다 매 회차 재확인을 또
                 # 끼워 넣으려 해서 정상 회차 부하까지 계속 키우게 된다.
                 last_recon_time = time.time()
 
-        log(f"{LOOP_INTERVAL_SEC}초 대기 후 다음 회차 진행...")
-        time.sleep(LOOP_INTERVAL_SEC)
+        interval = EXHAUSTED_LOOP_INTERVAL_SEC if refresher.exhausted else LOOP_INTERVAL_SEC
+        if refresher.exhausted:
+            log(f"[WARN] 새로고침으로도 회복되지 않아 회차 간격을 {interval}초로 늘립니다 "
+                "(reCAPTCHA 등 요청 차단 가능성 — 성공하면 원래 간격으로 복귀)")
+        log(f"{interval}초 대기 후 다음 회차 진행...")
+        time.sleep(interval)
 
 
 if __name__ == "__main__":
