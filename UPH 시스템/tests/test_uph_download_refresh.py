@@ -17,7 +17,7 @@ class FakeDriver:
     def __init__(self, handles=("W",), current="W"):
         self.window_handles = list(handles)
         self.current_window_handle = current
-        self.title = "확장주문검색2"
+        self.title = "확장주문검색2 이지어드민 V3.5+"  # 실제 WMS 탭 제목 형식
         self.refreshes = []  # 새로고침 때 선택돼 있던 창
         self.switch_to = mock.Mock()
         self.switch_to.window.side_effect = self._switch
@@ -409,10 +409,157 @@ class RunForeverWiring(unittest.TestCase):
         recon_offsets = [c for c in calls if c[2] == m.RECON_START_OFFSET_DAYS]
         self.assertEqual(len(recon_offsets), 2)  # 2회차에 재확인(송장입력일·배송일) 실행됨
 
+    def test_recon_not_deferred_if_last_recon_pass_never_started(self):
+        # AX-20261017-01 Codex 지적: 3번째(송장입력일 재확인)가 실패해 4번째(배송일 재확인)를 못 돌았으면
+        # 재확인 일정을 미루지 않고 다음 회차에 재확인 두 조회를 다시 넣는다
+        calls = []
+        # 1회차: 평소 2개 성공 → 재확인 1번째 실패(회차 종료) / 2회차: 4개 모두
+        self.run_loop([True, True, False] + [True] * 10, n_rounds=2, calls=calls, recon_first_only=True)
+        recon_calls = [c for c in calls if c[2] == m.RECON_START_OFFSET_DAYS]
+        self.assertEqual(len(recon_calls), 3)  # 1회차 1개(실패) + 2회차 2개
+
+    def test_exhausted_interval_env_validation(self):
+        # 모듈 reload는 표준출력 래핑을 다시 해서 테스트 러너를 망가뜨리므로 계산 함수만 검증한다
+        for raw, expected in (("abc", 600), ("-5", 600), ("0", 600), ("30", m.LOOP_INTERVAL_SEC), ("1200", 1200)):
+            with mock.patch.dict(m.os.environ, {"UPH_EXHAUSTED_LOOP_INTERVAL_SEC": raw}):
+                self.assertEqual(m._exhausted_loop_interval(), expected, raw)
+
     def test_dead_session_round_does_not_refresh(self):
         err = m.WebDriverException("no such window: target window already closed")
         driver, _ = self.run_loop([err, True, True, True, True], n_rounds=3)
         self.assertEqual(driver.refreshes, [])
+
+
+class TitledDriver(FakeDriver):
+    """창마다 제목이 다른 가짜 driver — W는 WMS, MGR*는 다운로드관리자."""
+
+    TITLES = {"W": "확장주문검색2 이지어드민 V3.5+"}
+
+    @property
+    def title(self):
+        return self.TITLES.get(self.current_window_handle, "다운로드관리자 이지어드민 V4.0+")
+
+    @title.setter
+    def title(self, _v):  # FakeDriver.__init__의 고정 제목 대입은 무시
+        pass
+
+    def close(self):
+        # 닫기 시도 자체를 기록한다 — 호출자가 예외를 삼켜도 'W를 닫으려 했다'는 게 남도록
+        self.close_attempts = getattr(self, "close_attempts", []) + [self.current_window_handle]
+        super().close()
+
+
+class WmsWindowSelection(unittest.TestCase):
+    """2026-10-21: 시작 때 다운로드관리자 창에 붙어 로그인된 WMS 탭을 닫아버린 사고 재현."""
+
+    def setUp(self):
+        self.logs = []
+        self.enterContext(mock.patch.object(m, "log", side_effect=self.logs.append))
+
+    def test_select_skips_download_manager(self):
+        d = TitledDriver(handles=("MGR", "W"), current="MGR")
+        self.assertEqual(m._select_wms_window(d), "W")
+        self.assertEqual(d.current_window_handle, "W")
+
+    def test_select_returns_none_when_only_manager(self):
+        d = TitledDriver(handles=("MGR",), current="MGR")
+        self.assertIsNone(m._select_wms_window(d))
+        self.assertEqual(d.current_window_handle, "MGR")
+        self.assertTrue(any("WMS(이지어드민) 탭을 찾지 못했습니다" in s for s in self.logs))
+
+    def test_select_ignores_unrelated_tab_and_refresh_keeps_wms(self):
+        # Codex 검토 재현: 새 탭(OTHER)이 WMS보다 먼저 나열돼도 WMS를 고르고, 복구 새로고침이 WMS를 닫지 않는다
+        class D(TitledDriver):
+            TITLES = {"W": "확장주문검색2 이지어드민 V3.5+", "OTHER": "New Tab"}
+
+        d = D(handles=("OTHER", "W", "MGR"), current="W")
+        self.assertEqual(m._select_wms_window(d), "W")
+        d2 = D(handles=("OTHER", "MGR", "W"), current="MGR")
+        self.assertEqual(m._select_wms_window(d2), "W")
+        r = m.PageRefresher(clock=Clock())
+        r.record_round(False)
+        with mock.patch.object(m.PageRefresher, "_wait_wms_ready", return_value=True):
+            self.assertTrue(r.maybe_refresh(d2, "W"))
+        self.assertEqual(d2.window_handles, ["W"])
+        self.assertNotIn("W", getattr(d2, "close_attempts", []))
+        self.assertEqual(d2.refreshes, ["W"])
+
+    def test_select_accepts_post_login_home_title(self):
+        # 로그인 직후 첫 화면 제목은 "이지WMS" (2026-10-21 실측)
+        class D(TitledDriver):
+            TITLES = {"H": "이지WMS", "OTHER": "New Tab"}
+
+        d = D(handles=("OTHER", "MGR", "H"), current="MGR")
+        self.assertEqual(m._select_wms_window(d), "H")
+
+    def test_select_none_when_only_unrelated_tabs(self):
+        class D(TitledDriver):
+            TITLES = {"OTHER": "New Tab"}
+
+        d = D(handles=("OTHER", "MGR"), current="OTHER")
+        self.assertIsNone(m._select_wms_window(d))
+
+    def test_stray_cleanup_never_closes_wms_even_if_focused_on_manager(self):
+        d = TitledDriver(handles=("W", "MGR"), current="MGR")
+        with mock.patch.object(m, "WebDriverWait") as wait:
+            wait.return_value.until.side_effect = m.TimeoutException("none")
+            with mock.patch.object(m.time, "sleep"):
+                m.clear_stray_popups(d)
+        self.assertIn("W", d.window_handles)
+        self.assertNotIn("W", getattr(d, "close_attempts", []))  # WMS 탭은 닫으려 시도조차 하지 않는다
+
+    def test_stray_cleanup_still_closes_leftover_manager(self):
+        d = TitledDriver(handles=("W", "MGR"), current="W")
+        with mock.patch.object(m, "WebDriverWait") as wait:
+            wait.return_value.until.side_effect = m.TimeoutException("none")
+            with mock.patch.object(m.time, "sleep"):
+                m.clear_stray_popups(d)
+        self.assertEqual(d.window_handles, ["W"])
+
+    def test_run_forever_starts_on_wms_when_connected_to_manager(self):
+        driver = TitledDriver(handles=("MGR", "W"), current="MGR")
+        seen = []
+
+        def fake_download(*_a):
+            seen.append(driver.current_window_handle)
+            return True
+
+        with mock.patch.object(m, "_connect_driver", return_value=driver), \
+             mock.patch.object(m, "run_download_macro", side_effect=fake_download), \
+             mock.patch.object(m.os.path, "exists", return_value=True), \
+             mock.patch.object(m, "RECON_INTERVAL_SEC", 10 ** 9), \
+             mock.patch.object(m.time, "time", return_value=10 ** 6), \
+             mock.patch.object(m.time, "sleep", side_effect=_Stop):
+            with self.assertRaises(_Stop):
+                m.run_forever()
+        self.assertEqual(seen, ["W", "W"])
+
+    def test_run_forever_picks_up_wms_tab_opened_later(self):
+        # 시작 땐 WMS 탭이 없음 → 사람이 다시 열고 로그인 → 다음 회차가 그 탭을 찾아 쓴다
+        driver = TitledDriver(handles=("MGR",), current="MGR")
+        seen, sleeps = [], {"n": 0}
+
+        def fake_download(*_a):
+            seen.append(driver.current_window_handle)
+            return driver.current_window_handle == "W"
+
+        def fake_sleep(_s):
+            sleeps["n"] += 1
+            if sleeps["n"] == 1:
+                driver.window_handles.append("W")  # 사람이 탭을 다시 엶
+            else:
+                raise _Stop
+
+        with mock.patch.object(m, "_connect_driver", return_value=driver), \
+             mock.patch.object(m, "run_download_macro", side_effect=fake_download), \
+             mock.patch.object(m.os.path, "exists", return_value=True), \
+             mock.patch.object(m, "RECON_INTERVAL_SEC", 10 ** 9), \
+             mock.patch.object(m.time, "time", return_value=10 ** 6), \
+             mock.patch.object(m.time, "sleep", side_effect=fake_sleep), \
+             mock.patch.object(m.PageRefresher, "_wait_wms_ready", return_value=True):
+            with self.assertRaises(_Stop):
+                m.run_forever()
+        self.assertEqual(seen[-2:], ["W", "W"])
 
 
 if __name__ == "__main__":

@@ -89,6 +89,15 @@ LOG_FILE_PATH = os.getenv("UPH_LOG_FILE") or os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "uph_agent.log"
 )
 
+# ⚠️ 제어판이 띄울 때 stdout은 DEVNULL이고 인코딩이 cp949라, 로그 문구의 '↳'·'—' 같은 문자를
+#    콘솔 핸들러가 못 써서 매 줄마다 UnicodeEncodeError 경고가 stderr로 쏟아졌다(2026-10-20 40KB).
+#    파일 로그는 멀쩡했지만 진짜 오류가 묻히므로 콘솔 쪽도 UTF-8(못 쓰는 글자는 치환)로 맞춘다.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass  # stdout이 None(pythonw)이거나 재설정을 지원하지 않는 스트림
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",

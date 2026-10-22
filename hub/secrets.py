@@ -37,6 +37,11 @@ FIELDS = {
     "DB_NAME": ("박스추천 DB 이름", "관리자에게 받은 DB 이름을 입력하세요.", False),
     "DB_USER": ("박스추천 DB 계정", "", False),
     "DB_PASSWORD": ("박스추천 DB 비밀번호", "", True),
+    "UPH_PANEL_ACCESS_CODE": (
+        "UPH 제어판 접근 코드",
+        "UPH 자동 제어판 입장 코드입니다. (관리자에게 받으세요)",
+        True,
+    ),
 }
 
 #: 프로그램별로 필요한 항목 (이것만 있으면 그 프로그램은 동작한다)
@@ -46,7 +51,8 @@ REQUIRED_BY = {
     # UPH 제어판이 띄우는 watchdog_agent가 DATABASE_URL을 쓴다. 여기 없으면
     # UPH만 쓰는 PC에서는 값을 물어보지 않아 워커가 시작하자마자 죽고,
     # 제어판에는 "오류로 중단됨"만 뜨고 원인이 안 보인다.
-    "uph_panel": ["DATABASE_URL"],
+    # 접근 코드는 공개 저장소에 두지 않는다(2026-10-22) — 개발 PC는 UPH 시스템/.env, exe는 여기서 1회 입력.
+    "uph_panel": ["DATABASE_URL", "UPH_PANEL_ACCESS_CODE"],
     "boxscm": ["DB_HOST", "DB_NAME", "DB_USER", "DB_PASSWORD"],
 }
 

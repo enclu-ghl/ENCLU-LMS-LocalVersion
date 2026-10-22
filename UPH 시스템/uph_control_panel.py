@@ -8,6 +8,7 @@ watchdog_agent.py 와 uph_download_macro.py 두 프로세스를 화면에서 직
 그냥 이 창을 켜둔 채로 두면 됩니다 (최소화만 해두셔도 백그라운드에서 계속 동작).
 """
 
+import hmac
 import os
 import sys
 import subprocess
@@ -135,6 +136,21 @@ def find_external_processes(script_name):
             pass
 
     return results
+
+
+# 제어판에서 일어난 시작·종료·창 닫기·예상치 못한 종료를 파일로 남긴다.
+# ⚠️ 2026-10-19~22: 매크로와 watchdog이 오류 출력 없이 동시에 사라지는 일이 다섯 번 있었는데,
+#    "종료 요청됨" 같은 기록이 화면 로그창에만 찍혀 원인(창 닫기인지·중지 버튼인지·스스로 죽었는지)을
+#    사후에 확인할 수 없었다. *.log라 저장소에는 올라가지 않는다.
+PANEL_EVENT_LOG = os.path.join(_DATA_DIR or BASE_DIR, "uph_panel_events.log")
+
+
+def log_panel_event(message):
+    try:
+        with open(PANEL_EVENT_LOG, "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}\n")
+    except OSError:
+        pass  # 기록 실패가 제어판 동작을 막으면 안 된다
 
 
 def kill_pid(pid):
@@ -280,10 +296,13 @@ class ProcessPanel:
         self.stop_btn.config(state="normal")
         self.info_label.config(text=f"시작 시각: {self.start_time.strftime('%Y-%m-%d %H:%M:%S')}")
         self._append_log(f"===== [{self.start_time.strftime('%H:%M:%S')}] 프로세스 시작 (PID {self.proc.pid}) =====")
+        log_panel_event(f"시작: {self.script_name} (PID {self.proc.pid})")
 
-    def stop(self):
+    def stop(self, reason="종료 버튼"):
         really_stopped = True
-        if self.proc and self.proc.poll() is None:
+        was_running = bool(self.proc and self.proc.poll() is None)
+        killed_ok = None
+        if was_running:
             # ⚠️ terminate()는 직계 자식 하나만 죽인다. 통합 exe에서 자식은
             #    PyInstaller onefile이라 부트로더 부모 + 실제 파이썬 자식 두 개로
             #    뜨고, Popen이 준 pid는 부트로더 쪽이다. 그래서 종료를 눌러도
@@ -315,6 +334,12 @@ class ProcessPanel:
             except subprocess.TimeoutExpired:
                 really_stopped = False
 
+        if was_running:
+            log_panel_event(
+                f"종료({reason}): {self.script_name} (PID {self.proc.pid}) — "
+                f"taskkill {'성공' if killed_ok else '실패'}, "
+                f"{'종료 확인됨' if really_stopped else '⚠️ 종료 확인 실패'}"
+            )
         self.stop_time = datetime.now()
         if really_stopped:
             self.status_label.config(text="● 중지됨", foreground="#888")
@@ -339,6 +364,11 @@ class ProcessPanel:
             self.stop_time = datetime.now()
             self._append_log(f"[ERROR] 프로세스가 예상치 못하게 종료됨 (종료코드 {self.proc.returncode})")
             stderr_tail = self._read_stderr_tail()
+            last_err = stderr_tail.strip().splitlines()[-1][:200] if stderr_tail.strip() else "없음"
+            log_panel_event(
+                f"예상치 못한 종료: {self.script_name} (PID {self.proc.pid}, 종료코드 {self.proc.returncode}) "
+                f"— 표준에러 마지막 줄: {last_err}"
+            )
             if stderr_tail:
                 self._append_log("----- 표준에러 출력(마지막 부분) -----")
                 self._append_log(stderr_tail, newline=False)
@@ -390,6 +420,7 @@ class ProcessPanel:
         for pid in self._external_pids:
             ok = kill_pid(pid)
             self._append_log(f"[INFO] 외부 프로세스 PID {pid} 종료 {'성공' if ok else '실패'}")
+            log_panel_event(f"외부 프로세스 종료 버튼: {self.script_name} PID {pid} {'성공' if ok else '실패'}")
         self._external_pids = []
         self.external_row.pack_forget()
         if self.status_label.cget("text") == "● 외부에서 실행 중":
@@ -425,7 +456,25 @@ class ProcessPanel:
         self.log_box.config(state="disabled")
 
 
-ACCESS_CODE = "encluscm"
+# 접근 코드는 공개 저장소에 두지 않는다 (2026-10-22). 개발 PC는 UPH 시스템/.env의
+# UPH_PANEL_ACCESS_CODE, 허브 exe는 허브가 처음 열 때 입력받아 암호화 저장한 값을 쓴다.
+ACCESS_CODE_ENV = "UPH_PANEL_ACCESS_CODE"
+
+
+def _configured_access_code():
+    value = (os.environ.get(ACCESS_CODE_ENV) or "").strip()
+    if value:
+        return value
+    # 허브 없이 이 파일만 단독 실행하면 .env를 올려줄 쪽이 없으므로 옆 .env에서 직접 읽는다
+    try:
+        with open(os.path.join(BASE_DIR, ".env"), encoding="utf-8-sig") as f:
+            for line in f:
+                name, sep, val = line.strip().partition("=")
+                if sep and name.strip() == ACCESS_CODE_ENV:
+                    return val.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return ""
 
 
 class LoginScreen:
@@ -458,7 +507,14 @@ class LoginScreen:
         ttk.Button(frame, text="입장", command=self.check_code).pack(fill="x", pady=(10, 0))
 
     def check_code(self):
-        if self.code_var.get() == ACCESS_CODE:
+        expected = _configured_access_code()
+        if not expected:
+            # 설정이 없으면 열어주지 않는다 — 빈 코드로 통과되면 잠금이 없는 것과 같다
+            self.error_label.config(text=f"접근 코드가 설정되지 않았습니다 ({ACCESS_CODE_ENV}). 관리자에게 문의하세요.")
+            self.code_var.set("")
+            return
+        # compare_digest는 str이면 ASCII만 받아 한글이 섞이면 TypeError — 바이트로 비교한다 (Codex 검토)
+        if hmac.compare_digest(self.code_var.get().strip().encode("utf-8"), expected.encode("utf-8")):
             self.on_success()
         else:
             self.error_label.config(text="코드가 올바르지 않습니다.")
@@ -504,6 +560,10 @@ class App:
         )
 
         root.protocol("WM_DELETE_WINDOW", self.on_close)
+        # X 버튼(on_close)이 아닌 경로로 창이 없어지는 경우(허브 종료 등)도 기록한다
+        root.bind("<Destroy>", lambda e: log_panel_event("제어판 창이 없어짐")
+                  if e.widget is root else None, add="+")
+        log_panel_event("제어판 열림")
         self.tick_loop()
 
     def tick_loop(self):
@@ -511,9 +571,23 @@ class App:
         self.download_panel.tick()
         self.root.after(1000, self.tick_loop)
 
+    def _any_running(self):
+        return any(p.proc and p.proc.poll() is None for p in (self.watchdog_panel, self.download_panel))
+
     def on_close(self):
-        self.watchdog_panel.stop()
-        self.download_panel.stop()
+        # ⚠️ 창을 닫으면 두 프로세스가 함께 강제 종료된다. 2026-10-19~22 다섯 번의 '무출력 동시 정지'가
+        #    이 경로와 모양이 같아, 실행 중일 때는 한 번 묻는다 (최소화로 충분한 경우가 대부분).
+        if self._any_running() and not messagebox.askyesno(
+            "UPH 제어판 닫기",
+            "창을 닫으면 watchdog 에이전트와 다운로드 매크로가 모두 종료되어 UPH 수집이 멈춥니다.\n\n"
+            "정말 닫을까요?\n\n('아니오'를 누르면 그대로 계속 실행됩니다. 화면에서 치우려면 최소화하세요)",
+            parent=self.root,
+        ):
+            log_panel_event("창 닫기 취소 — 계속 실행")
+            return
+        log_panel_event("창 닫기 — 두 프로세스 종료")
+        self.watchdog_panel.stop(reason="창 닫기")
+        self.download_panel.stop(reason="창 닫기")
         self.root.after(300, self.root.destroy)
 
 

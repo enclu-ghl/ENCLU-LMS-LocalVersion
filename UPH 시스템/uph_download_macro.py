@@ -120,15 +120,6 @@ RECON_INTERVAL_SEC = int(3.5 * 24 * 60 * 60)  # 주 2회(3.5일마다 한 번) �
 
 POLL_INTERVAL_SEC = 5   # 다운로드관리자 진척도 재확인 주기(초)
 LOOP_INTERVAL_SEC = 90  # 한 회차 끝나고 다음 회차 시작까지 대기 시간(초)
-# 반복 실패 자동 복구 (2026-10-15): 회차가 실패했거나 마지막 성공 후 이만큼 지나도록 성공이 없으면
-# 다음 회차 전에 로그인된 WMS 탭을 새로고침한다. 성공 없이 REFRESH_MAX_CONSECUTIVE번 새로고침해도
-# 안 되면 새로고침만 멈추고(회차는 계속) 사람 확인을 요청한다.
-REFRESH_AFTER_NO_SUCCESS_SEC = int(os.getenv("UPH_REFRESH_AFTER_SEC", "900"))  # 15분
-REFRESH_MAX_CONSECUTIVE = 3
-REFRESH_READY_TIMEOUT_SEC = 30
-# 새로고침을 REFRESH_MAX_CONSECUTIVE번 해도 안 되면(예: reCAPTCHA 반복 — 잦은 요청을 봇으로 보는 차단일 수 있음)
-# 계속 90초마다 두드리지 않고 회차 간격을 늘린다. 전체 성공 시 원래 간격으로 돌아온다.
-EXHAUSTED_LOOP_INTERVAL_SEC = int(os.getenv("UPH_EXHAUSTED_LOOP_INTERVAL_SEC", "600"))
 
 
 def _positive_int_env(name, default):
@@ -137,6 +128,23 @@ def _positive_int_env(name, default):
         return v if v > 0 else default
     except ValueError:
         return default
+
+
+# 반복 실패 자동 복구 (2026-10-15): 회차가 실패했거나 마지막 성공 후 이만큼 지나도록 성공이 없으면
+# 다음 회차 전에 로그인된 WMS 탭을 새로고침한다. 성공 없이 REFRESH_MAX_CONSECUTIVE번 새로고침해도
+# 안 되면 새로고침만 멈추고(회차는 계속) 사람 확인을 요청한다.
+REFRESH_AFTER_NO_SUCCESS_SEC = _positive_int_env("UPH_REFRESH_AFTER_SEC", 900)  # 15분
+REFRESH_MAX_CONSECUTIVE = 3
+REFRESH_READY_TIMEOUT_SEC = 30
+# 새로고침을 REFRESH_MAX_CONSECUTIVE번 해도 안 되면(예: reCAPTCHA 반복 — 잦은 요청을 봇으로 보는 차단일 수 있음)
+# 계속 90초마다 두드리지 않고 회차 간격을 늘린다. 전체 성공 시 원래 간격으로 돌아온다.
+# 잘못된 값(비숫자·0·음수)은 기본값, 평소 간격보다 짧은 값은 평소 간격으로 올린다 — 늘리려고 둔 값이
+# 오히려 더 자주 두드리게 되면 안 된다 (AX-20261017-01 Codex 지적).
+def _exhausted_loop_interval():
+    return max(LOOP_INTERVAL_SEC, _positive_int_env("UPH_EXHAUSTED_LOOP_INTERVAL_SEC", 600))
+
+
+EXHAUSTED_LOOP_INTERVAL_SEC = _exhausted_loop_interval()
 
 
 # 다운로드관리자에서 요청 하나를 기다리는 최대 시간. 예전엔 무제한이라, 처음 보는 상태(2026-10-16 "오류\nreCAPTCHA
@@ -470,12 +478,16 @@ def clear_stray_popups(driver):
         pass
 
     # 이전 회차에서 열렸던 다운로드관리자 창이 안 닫히고 남아있을 수도 있으니,
-    # 지금 붙어있는 창(main_handle) 말고 다른 창이 있으면 전부 닫아버림
+    # 지금 붙어있는 창(main_handle) 말고 다른 다운로드관리자 창이 있으면 닫는다.
+    # ⚠️ 2026-10-21: 예전엔 '현재 창 말고 전부' 닫아서, 현재 창이 다운로드관리자였을 때 로그인된
+    #    WMS 탭을 닫아버렸다. 제목이 다운로드관리자인 창만 닫는다.
     try:
         main_handle = driver.current_window_handle
         extra_handles = [h for h in driver.window_handles if h != main_handle]
         for h in extra_handles:
             driver.switch_to.window(h)
+            if DOWNLOAD_MANAGER_TITLE_MARK not in (driver.title or ""):
+                continue
             driver.close()
             cleared.append("잔여 다운로드관리자 창")
         driver.switch_to.window(main_handle)
@@ -836,6 +848,51 @@ def _connect_driver():
     return driver
 
 
+DOWNLOAD_MANAGER_TITLE_MARK = "다운로드관리자"
+# WMS 탭 제목 예: "확장주문검색2 이지어드민 V3.5+", 로그인 직후 첫 화면은 "이지WMS"(2026-10-21 실측)
+WMS_TITLE_MARKS = ("이지어드민", "이지WMS")
+
+
+def _is_wms_title(title):
+    title = title or ""
+    return any(mark in title for mark in WMS_TITLE_MARKS) and DOWNLOAD_MANAGER_TITLE_MARK not in title
+
+
+def _select_wms_window(driver):
+    """디버그 크롬의 창 중 로그인된 WMS 탭(제목에 '이지어드민'이 있고 다운로드관리자가 아닌 창)으로
+    초점을 옮기고 그 핸들을 돌려준다. 현재 창이 WMS면 그대로 쓴다.
+
+    ⚠️ 2026-10-21: 매크로가 다운로드 대기 중에 종료되면 다운로드관리자 창이 남는다. 다음 시작 때
+    크롬 연결이 그 창에 붙었고, wms_handle이 다운로드관리자로 잡힌 채 잔여 창 정리가 '현재 창 말고
+    전부 닫기'를 해서 로그인된 WMS 탭을 닫아버렸다(자동 로그인이 안 돼 사람이 다시 로그인해야 함).
+    그래서 연결 직후 현재 창을 믿지 않고 제목으로 WMS 탭을 고른다. '다운로드관리자가 아님'만으로
+    고르면 새 탭 같은 엉뚱한 창이 뽑혀, 복구 새로고침이 진짜 WMS 탭을 닫는다(Codex 검토) — 그래서
+    WMS 제목을 직접 확인한다. WMS 탭이 없으면 None — 이때 호출자는 아무 창도 닫지 않아야 한다.
+    """
+    original = driver.current_window_handle
+    try:
+        if _is_wms_title(driver.title):
+            return original
+    except Exception as e:
+        log(f"    [WARN] 현재 창 확인 중 오류(건너뜀): {type(e).__name__}")
+    for h in list(driver.window_handles):
+        if h == original:
+            continue
+        try:
+            driver.switch_to.window(h)
+            if _is_wms_title(driver.title):
+                return h
+        except Exception as e:
+            log(f"    [WARN] 창 확인 중 오류(건너뜀): {type(e).__name__}")
+    try:
+        driver.switch_to.window(original)
+    except Exception:
+        pass
+    log("[ERR] 디버그 크롬에서 로그인된 WMS(이지어드민) 탭을 찾지 못했습니다.")
+    log("    ⚠️ 디버그 크롬에서 이지어드민 탭을 열고 로그인한 뒤 매크로를 다시 시작해주세요.")
+    return None
+
+
 class PageRefresher:
     """반복 실패 시 로그인된 WMS 탭을 driver.refresh()로 새로고침해 페이지 상태를 초기화한다.
 
@@ -979,8 +1036,8 @@ def run_forever():
     디버그 크롬 자체가 완전히 꺼져있으면 사람이 다시 켜고 로그인해줘야 한다.
     """
     driver = _connect_driver()
+    wms_handle = _select_wms_window(driver)  # 새로고침 대상 — 로그인된 원래 WMS 탭 (다운로드관리자 창 제외)
     log(f"브라우저 연결됨: {driver.title}")
-    wms_handle = driver.current_window_handle  # 새로고침 대상 — 로그인된 원래 WMS 탭
     refresher = PageRefresher()
 
     consecutive_reconnect_failures = 0
@@ -1024,7 +1081,10 @@ def run_forever():
             # 회차가 끝나면 재확인 일정이 3.5일 밀리므로 여기서 따로 잡는다 — 세션 끊김만 기존 재연결 경로로.
             # 매 회차 WMS 탭에서 시작한다 — clear_stray_popups()는 '현재 창' 말고 나머지를 닫으므로, 이전 회차가
             # 다운로드관리자 창에 초점을 남긴 채 끝났으면 WMS 탭을 닫아버릴 수 있다.
-            if wms_handle in driver.window_handles and driver.current_window_handle != wms_handle:
+            if wms_handle not in driver.window_handles:
+                # 시작 때 WMS 탭이 없었거나 닫혔으면, 사람이 다시 열고 로그인했을 수 있으니 다시 찾는다
+                wms_handle = _select_wms_window(driver)
+            elif driver.current_window_handle != wms_handle:
                 driver.switch_to.window(wms_handle)
             try:
                 refresher.maybe_refresh(driver, wms_handle)
@@ -1037,7 +1097,10 @@ def run_forever():
             for pass_no, (date_type_value, status_text, start_off, end_off) in enumerate(passes):
                 label = DATE_TYPE_LABELS.get(date_type_value, date_type_value)
                 log(f"  --- {label} 기준 조회 ---")
-                if is_recon_round and pass_no >= 2:   # 3·4번째가 오래된 잔여 재확인 조회
+                # 3·4번째가 오래된 잔여 재확인 조회(송장입력일·배송일). 마지막 재확인 조회까지 시작해야
+                # 재확인을 '했다'고 본다 — 3번째가 실패해 4번째(배송일)를 못 돌았는데 일정을 3.5일 미루면
+                # 배송일 재확인이 그만큼 빠진다 (AX-20261017-01 Codex 지적).
+                if is_recon_round and pass_no == len(passes) - 1:
                     recon_started = True
                 ok = run_download_macro(driver, date_type_value, status_text, start_off, end_off)
                 round_success = round_success and ok
@@ -1075,7 +1138,7 @@ def run_forever():
                     pass
                 try:
                     driver = _connect_driver()
-                    wms_handle = driver.current_window_handle
+                    wms_handle = _select_wms_window(driver)
                     log(f"    [복구성공] 재연결됨: {driver.title}")
                     consecutive_reconnect_failures = 0
                 except Exception as reconnect_err:
