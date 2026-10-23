@@ -562,5 +562,36 @@ class WmsWindowSelection(unittest.TestCase):
         self.assertEqual(seen[-2:], ["W", "W"])
 
 
+
+class ForcePaintWait(unittest.TestCase):
+    """가려진 창에서 팝업이 투명으로 굳는 경우: 대기 중 화면 캡처로 프레임을 그리게 한다."""
+
+    def _run(self, visible_after_nudges, timeout):
+        driver = mock.Mock()
+        state = {"nudges": 0}
+        driver.execute_cdp_cmd.side_effect = lambda *a, **k: state.__setitem__("nudges", state["nudges"] + 1)
+
+        class FakeWait:
+            def __init__(self, drv, t):
+                self.t = t
+            def until(self, cond):
+                if state["nudges"] >= visible_after_nudges:
+                    return "INPUT"
+                clock[0] += self.t
+                raise m.TimeoutException("hidden")
+
+        clock = [0.0]
+        with mock.patch.object(m, "WebDriverWait", FakeWait),              mock.patch.object(m.time, "time", side_effect=lambda: clock[0]):
+            return driver, m.wait_visible_forcing_paint(driver, "#swal2-input", timeout=timeout, nudge_every=3)
+
+    def test_nudge_makes_popup_visible(self):
+        driver, el = self._run(visible_after_nudges=1, timeout=45)
+        self.assertEqual(el, "INPUT")
+        driver.execute_cdp_cmd.assert_called_with("Page.captureScreenshot", {"format": "jpeg", "quality": 10})
+
+    def test_times_out_when_never_visible(self):
+        with self.assertRaises(m.TimeoutException):
+            self._run(visible_after_nudges=10**6, timeout=9)
+
 if __name__ == "__main__":
     unittest.main()

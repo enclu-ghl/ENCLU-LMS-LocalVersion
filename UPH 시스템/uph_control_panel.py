@@ -64,6 +64,11 @@ def launch_debug_chrome():
             chrome_exe,
             f"--remote-debugging-port={CHROME_DEBUG_PORT}",
             f"--user-data-dir={CHROME_DEBUG_PROFILE}",
+            # 창이 가려져도 화면 그리기·타이머를 멈추지 않게 한다 — 가려진 상태에서
+            # SweetAlert 팝업이 투명으로 굳어 다운로드가 연속 실패했다 (2026-10-23)
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+            "--disable-background-timer-throttling",
         ])
     except Exception as e:
         messagebox.showerror("크롬 실행 실패", str(e))

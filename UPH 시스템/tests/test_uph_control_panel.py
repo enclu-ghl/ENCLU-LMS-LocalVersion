@@ -243,7 +243,10 @@ class StandaloneSettings(unittest.TestCase):
 class Webhook(unittest.TestCase):
     def test_no_url_or_non_https_does_not_send(self):
         opener = mock.Mock()
-        with mock.patch.dict(os.environ, {}, clear=False):
+        # 실제 .env에 웹훅 주소가 있어도 영향받지 않게 빈 폴더를 기준으로 읽게 한다
+        with tempfile.TemporaryDirectory() as empty_dir, \
+                mock.patch.object(cp, "BASE_DIR", empty_dir), \
+                mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop(cp.ALERT_WEBHOOK_ENV, None)
             self.assertFalse(cp.send_webhook("x", opener=opener))
         self.assertFalse(cp.send_webhook("x", url="http://example.invalid/hook", opener=opener))

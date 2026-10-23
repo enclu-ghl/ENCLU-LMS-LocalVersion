@@ -314,6 +314,32 @@ def wait_visible(driver, selector, timeout=WAIT_TIMEOUT):
     )
 
 
+def wait_visible_forcing_paint(driver, selector, timeout=WAIT_TIMEOUT, nudge_every=3.0):
+    """wait_visible과 같지만, 기다리는 동안 주기적으로 화면을 한 번씩 그리게 한다.
+
+    ⚠️ 2026-10-23 원인 확인: 크롬 창이 다른 창에 가려져 있으면(가림 감지) 크롬이 화면
+    그리기를 멈추고, SweetAlert 팝업이 등장 애니메이션 첫 프레임(opacity 0)에 멈춘 채로
+    남는다. 요소는 DOM에 있고 입력창도 있지만 부모 팝업이 투명이라 Selenium은 '안 보임'으로
+    판단 → 45초 대기 후 실패. 새로고침해도 똑같고, 창이 앞으로 나오거나 허브를 재시작하면
+    풀렸던 이유가 이것이다. CDP 화면 캡처를 한 번 부르면 프레임이 그려져 즉시 opacity 1이
+    되는 것을 실측으로 확인했다(13:27, 캡처 직후 팝업3 통과).
+    """
+    deadline = time.time() + timeout
+    while True:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            raise TimeoutException(f"{selector} 표시 대기 시간 초과 ({timeout}초)")
+        try:
+            return WebDriverWait(driver, min(nudge_every, remaining)).until(
+                EC.visibility_of_element_located((By.CSS_SELECTOR, selector))
+            )
+        except TimeoutException:
+            try:
+                driver.execute_cdp_cmd("Page.captureScreenshot", {"format": "jpeg", "quality": 10})
+            except Exception:
+                pass
+
+
 def wait_gone(driver, selector, timeout=WAIT_TIMEOUT):
     try:
         WebDriverWait(driver, timeout).until(
@@ -505,6 +531,8 @@ DOWNLOAD_CLICK_MAX_ATTEMPTS = 3  # 팝업3(SweetAlert)이 안 뜨면 처음부�
 # 그대로였다 — 즉 "늦게 뜨는" 게 아니라 다운로드 요청 자체가 서버에서 씹혀서 팝업이
 # 아예 안 뜨는 상황으로 보인다(clear_stray_popups가 다음 회차 시작 시 "잔여 SweetAlert
 # 정리됨"을 남긴 적이 없었음 — 즉 뜬 채로 방치된 게 아니라 애초에 안 떴다는 뜻).
+# → 2026-10-23 정정: 실제로는 팝업이 떠 있었지만 크롬 창이 가려져 화면 그리기가 멈춰
+#   투명(opacity 0) 상태로 굳어 있었다. wait_visible_forcing_paint() 참고.
 # 무작정 오래 기다리는 대신, 짧게(45초) 기다리다 안 뜨면 다운로드(F6) 클릭부터 통째로
 # 다시 시도하는 방식으로 바꾼다 — 재요청 자체가 새로 성공할 기회를 여러 번 준다.
 
@@ -528,7 +556,7 @@ def click_download_and_handle_popups(driver):
 
             # 팝업3: SweetAlert 다운로드 안내 (문구 입력 필요)
             log("    팝업3 SweetAlert '다운로드 안내' 대기 -> 문구 입력")
-            swal_input = wait_visible(driver, SWAL_INPUT, timeout=SWAL_WAIT_TIMEOUT)
+            swal_input = wait_visible_forcing_paint(driver, SWAL_INPUT, timeout=SWAL_WAIT_TIMEOUT)
             swal_input.clear()
             swal_input.send_keys(SWAL_CONFIRM_TEXT)
             time.sleep(0.3)
