@@ -32,7 +32,7 @@ description: ENCLU SCM 물류통합시스템(허브 런처, UPH 시스템, 박�
 - **릴리스:** 허브 exe는 GitHub Actions가 빌드해 Releases로 배포(`ENCLU_SCM.spec`, `version.txt`).
 - **`sqlalchemy<2.1` 고정을 풀지 말 것.** 2.1부터 `postgresql://`의 기본 드라이버가 psycopg(v3)라 psycopg2만 있는 환경에서 앱이 안 뜬다
   (2026-10-06 Streamlit Cloud 장애). 웹앱은 고정돼 있고, 루트(exe 빌드) `requirements.txt`는 HANDOFF 위험 항목 참고.
-- Streamlit Cloud 앱이 아직 ENCLU-LMS 저장소를 본다 — `app.py` 푸시는 Cloud에도 반영된다.
+- Streamlit Cloud 앱은 2026-10-23 삭제했다 — `app.py` 푸시는 서버 PC 로컬 웹앱에만 영향(다음 접속부터 반영).
 
 ## git 작업 원칙
 
