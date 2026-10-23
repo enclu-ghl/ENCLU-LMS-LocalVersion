@@ -9,9 +9,13 @@ watchdog_agent.py 와 uph_download_macro.py 두 프로세스를 화면에서 직
 """
 
 import hmac
+import json
 import os
 import sys
 import subprocess
+import threading
+import time
+import urllib.request
 from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
@@ -153,6 +157,82 @@ def log_panel_event(message):
         pass  # 기록 실패가 제어판 동작을 막으면 안 된다
 
 
+def _setting(name, default=""):
+    """환경변수 우선, 없으면 옆 .env에서 읽는다. 허브 없이 이 파일만 단독 실행하면 .env를 올려줄 쪽이 없다."""
+    value = (os.environ.get(name) or "").strip()
+    if value:
+        return value
+    try:
+        with open(os.path.join(BASE_DIR, ".env"), encoding="utf-8-sig") as f:
+            for line in f:
+                key, sep, val = line.strip().partition("=")
+                if sep and key.strip() == name:
+                    return val.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return default
+
+
+# ── UPH 수집 멈춤 알림 (2026-10-23) ──
+# 10/19~22 수집이 8~16시간씩 멈췄는데 사람이 알아채기 전까지 아무 신호가 없었다. 제어판이 켜져 있는 동안
+# ① 매크로가 돌고 있는데 [DONE]이 오래 없거나 ② 프로세스가 스스로 죽으면 바로 알린다.
+# 기준 35분: 서버 생성 대기가 실측 최대 16.5분(10/22)·요청당 상한 30분이라 정상 회차를 잘못 잡지 않도록 여유를 둔다.
+def _alert_threshold_sec():
+    try:
+        minutes = int(_setting("UPH_ALERT_NO_DONE_MIN", "35"))
+        return max(10, minutes) * 60   # 너무 짧게 잡아 정상 회차마다 울리는 것 방지
+    except ValueError:
+        return 35 * 60
+
+
+class StallMonitor:
+    """[DONE]이 기준 시간 넘게 없으면 한 번 알리고, 다시 [DONE]이 오면 회복을 한 번 알린다 (화면 없이 판단만)."""
+
+    def __init__(self, threshold_sec=None, clock=time.monotonic):
+        self.threshold = threshold_sec if threshold_sec is not None else _alert_threshold_sec()
+        self.clock = clock
+        self.active = False
+        self.alerted_at = None
+        self.started_at = None
+
+    def observe(self, running, started_at, last_done_at):
+        """'alert' | 'recovered' | None. 실행 중이 아니면(사람이 끔·죽음 알림은 별도) 판단을 초기화한다."""
+        if not running or started_at is None:
+            self.active, self.alerted_at, self.started_at = False, None, None
+            return None
+        if started_at != self.started_at:
+            # 다음 tick 전에 종료→재시작되면 '실행 중 아님'을 못 볼 수 있다 — 시작 시각이 바뀌면 새 실행으로 본다 (Codex 검토)
+            self.active, self.alerted_at, self.started_at = False, None, started_at
+        now = self.clock()
+        if self.active:
+            if last_done_at is not None and last_done_at > self.alerted_at:
+                self.active, self.alerted_at = False, None
+                return "recovered"
+            return None
+        reference = max(x for x in (started_at, last_done_at) if x is not None)
+        if now - reference >= self.threshold:
+            self.active, self.alerted_at = True, now
+            return "alert"
+        return None
+
+
+ALERT_WEBHOOK_ENV = "UPH_ALERT_WEBHOOK_URL"   # 선택: 메신저 수신 웹훅 주소(.env). 없으면 화면 알림만.
+
+
+def send_webhook(message, url=None, opener=urllib.request.urlopen):
+    """웹훅으로 {"text": 메시지}를 보낸다. 실패해도 예외를 올리지 않고 False (제어판을 멈추면 안 됨)."""
+    url = url if url is not None else _setting(ALERT_WEBHOOK_ENV)
+    if not url.startswith("https://"):
+        return False
+    try:
+        req = urllib.request.Request(url, data=json.dumps({"text": message}).encode("utf-8"),
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        with opener(req, timeout=10):
+            return True
+    except Exception:
+        return False
+
+
 def kill_pid(pid):
     try:
         # timeout: 이 함수는 GUI 스레드에서 불린다. taskkill이 응답하지 않으면
@@ -183,6 +263,10 @@ class ProcessPanel:
         self.start_time = None
         self.stop_time = None
         self.log_pos = 0
+        self.started_mono = None        # 멈춤 알림 기준 — 시작 후 아직 [DONE]이 없을 때
+        self.last_done_mono = None      # 로그에서 마지막으로 [DONE]을 본 시각
+        self.unexpected_exit = None     # (종료코드, stderr 마지막 줄) — App이 알림 후 비운다
+        self.done_watch_pos = 0         # [DONE] 판정용 바이트 위치 (이번 실행 이전 로그 제외)
         self._external_pids = []       # 이 창이 아닌 곳에서 발견된 동일 스크립트 프로세스
         self._external_check_counter = 5  # 창 뜨자마자 첫 tick에서 바로 1회 확인되도록
 
@@ -290,6 +374,15 @@ class ProcessPanel:
         self.start_time = datetime.now()
         self.stop_time = None
         self.log_pos = 0  # 새로 시작할 때 로그를 처음부터 다시 보여줌
+        self.started_mono = time.monotonic()
+        self.last_done_mono = None
+        self.unexpected_exit = None
+        # 화면 로그는 처음부터 다시 보여주지만, [DONE] 판정은 이번 실행에서 새로 쓴 부분만 본다 —
+        # 매크로 로그는 누적이라 과거 [DONE]을 이번 실행의 완료로 오인하면 안 된다 (Codex 검토)
+        try:
+            self.done_watch_pos = os.path.getsize(self.log_path)
+        except OSError:
+            self.done_watch_pos = 0
 
         self.status_label.config(text="● 가동중", foreground="#1a9c1a")
         self.start_btn.config(state="disabled")
@@ -369,6 +462,7 @@ class ProcessPanel:
                 f"예상치 못한 종료: {self.script_name} (PID {self.proc.pid}, 종료코드 {self.proc.returncode}) "
                 f"— 표준에러 마지막 줄: {last_err}"
             )
+            self.unexpected_exit = (self.proc.returncode, last_err)
             if stderr_tail:
                 self._append_log("----- 표준에러 출력(마지막 부분) -----")
                 self._append_log(stderr_tail, newline=False)
@@ -434,9 +528,27 @@ class ProcessPanel:
                 f.seek(self.log_pos)
                 new_data = f.read()
                 self.log_pos = f.tell()
+            self._check_new_done()
             if new_data:
                 self._append_log(new_data, newline=False)
         except Exception:
+            pass
+
+    def _check_new_done(self):
+        """이번 실행에서 새로 쓴 로그에 [DONE]이 있으면 완료 시각을 갱신한다 (바이트 위치로 추적)."""
+        try:
+            size = os.path.getsize(self.log_path)
+            if size < self.done_watch_pos:
+                self.done_watch_pos = 0   # 로그가 비워지거나 교체됨
+            if size == self.done_watch_pos:
+                return
+            with open(self.log_path, "rb") as f:
+                f.seek(max(0, self.done_watch_pos - 16))   # 경계에 걸친 '[DONE]'도 잡도록 조금 겹쳐 읽음
+                chunk = f.read()
+                self.done_watch_pos = f.tell()
+            if "[DONE]".encode("utf-8") in chunk:
+                self.last_done_mono = time.monotonic()
+        except OSError:
             pass
 
     def _read_stderr_tail(self, max_chars=4000):
@@ -462,19 +574,7 @@ ACCESS_CODE_ENV = "UPH_PANEL_ACCESS_CODE"
 
 
 def _configured_access_code():
-    value = (os.environ.get(ACCESS_CODE_ENV) or "").strip()
-    if value:
-        return value
-    # 허브 없이 이 파일만 단독 실행하면 .env를 올려줄 쪽이 없으므로 옆 .env에서 직접 읽는다
-    try:
-        with open(os.path.join(BASE_DIR, ".env"), encoding="utf-8-sig") as f:
-            for line in f:
-                name, sep, val = line.strip().partition("=")
-                if sep and name.strip() == ACCESS_CODE_ENV:
-                    return val.strip().strip('"').strip("'")
-    except OSError:
-        pass
-    return ""
+    return _setting(ACCESS_CODE_ENV)
 
 
 class LoginScreen:
@@ -559,6 +659,11 @@ class App:
             "uph_download_macro.py", "uph_download_macro.log"
         )
 
+        # 멈춤 알림 줄 — 알림이 있을 때만 빨갛게 표시
+        self.alert_label = ttk.Label(root, text="", foreground="#c0392b", font=("맑은 고딕", 10, "bold"))
+        self.alert_label.pack(pady=(0, 6))
+        self.stall = StallMonitor()
+
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         # X 버튼(on_close)이 아닌 경로로 창이 없어지는 경우(허브 종료 등)도 기록한다
         root.bind("<Destroy>", lambda e: log_panel_event("제어판 창이 없어짐")
@@ -569,7 +674,64 @@ class App:
     def tick_loop(self):
         self.watchdog_panel.tick()
         self.download_panel.tick()
+        try:
+            self._check_alerts()
+        except Exception:
+            pass  # 알림 판단 오류가 제어판 갱신을 멈추면 안 된다
         self.root.after(1000, self.tick_loop)
+
+    def _check_alerts(self):
+        for panel in (self.watchdog_panel, self.download_panel):
+            key = "exit:" + panel.script_name
+            if panel.unexpected_exit is not None:
+                code, last_err = panel.unexpected_exit
+                panel.unexpected_exit = None
+                self.notify(key, f"{panel.script_name}이(가) 예상치 못하게 종료됐습니다 (종료코드 {code}). "
+                            f"UPH 수집이 멈췄습니다 — 제어판에서 다시 시작하세요. 마지막 오류: {last_err}")
+            elif key in self.active_alerts and panel.proc and panel.proc.poll() is None:
+                self.notify(key, f"{panel.script_name}이(가) 다시 시작됐습니다.", recovered=True)
+        p = self.download_panel
+        running = bool(p.proc and p.proc.poll() is None)
+        if "stall" in self.active_alerts and (not running or p.started_mono != getattr(self, "_stall_run", None)):
+            # 멈춤 경고는 그 실행에 대한 것 — 매크로를 끄거나 새로 시작하면 내린다 (새 실행의 멈춤은 다시 판단) (Codex 검토)
+            self.notify("stall", "다운로드 매크로가 중지되거나 새로 시작되어 이전 멈춤 경고를 내립니다.", recovered=True)
+        result = self.stall.observe(running, p.started_mono, p.last_done_mono)
+        if result == "alert":
+            self._stall_run = p.started_mono
+        if result == "alert":
+            self.notify("stall", f"다운로드 매크로가 {self.stall.threshold // 60}분 넘게 정상 완료([DONE])가 없습니다. "
+                        "디버그 크롬의 WMS 화면(로그인·팝업)을 확인하세요.")
+        elif result == "recovered":
+            self.notify("stall", "다운로드 매크로가 다시 정상 완료했습니다 (멈춤 해소).", recovered=True)
+
+    @property
+    def active_alerts(self):
+        # 원인별로 따로 켜고 끈다 — 다운로드 회복이 watchdog 종료 경고를 지우면 안 된다 (Codex 검토)
+        if not hasattr(self, "_active_alerts"):
+            self._active_alerts = {}
+        return self._active_alerts
+
+    def notify(self, key, message, recovered=False):
+        stamp = datetime.now().strftime("%m/%d %H:%M")
+        log_panel_event(("알림 해소: " if recovered else "알림: ") + message)
+        if recovered:
+            self.active_alerts.pop(key, None)
+        else:
+            self.active_alerts[key] = f"⚠️ [{stamp}] {message}"
+        self.alert_label.config(text="\n".join(self.active_alerts.values()))
+        threading.Thread(target=send_webhook, args=(f"[UPH {stamp}] {message}",), daemon=True).start()
+        if recovered:
+            return
+        try:
+            self.root.bell()
+            win = tk.Toplevel(self.root)
+            win.title("UPH 수집 알림")
+            win.attributes("-topmost", True)
+            ttk.Label(win, text=f"[{stamp}]\n{message}", wraplength=420, padding=16,
+                      font=("맑은 고딕", 10)).pack()
+            ttk.Button(win, text="확인", command=win.destroy).pack(pady=(0, 12))
+        except tk.TclError:
+            pass  # 창을 띄우지 못해도 기록·웹훅은 남았다
 
     def _any_running(self):
         return any(p.proc and p.proc.poll() is None for p in (self.watchdog_panel, self.download_panel))
