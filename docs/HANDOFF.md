@@ -45,6 +45,13 @@
 - 기술 부채: Streamlit `use_container_width` deprecated(`width='stretch'`), `st.components.v1.html` → `st.iframe` 경고.
 
 ## 진행 중
+- **송장 시스템 설계 (AX-20261029-01)** — 설계 단계, 코드·DB 변경 없음. 방향은 DECISIONS 2026-10-29 (A안 직접 출력·KSE 1차·시책 자동 대조·출력 횟수 카운트).
+  - [x] Codex 설계 지시서 `plan.md`, Claude `plan-check.md`
+  - [x] 이지어드민 원본·정리 파일, KSE 목록, KSE 라벨(L10) 표본 확인 → `sample-waybill-upload.md`
+  - [x] KSE API 문서 정리 → `kse-api-notes.md` (출력용 송장 API 없음, 목록 검색 없음, 셀러별 키)
+  - [x] 설계서 v0.1 → `reports/AX-20261029-01/design.md` (단계·게이트 포함)
+  - [ ] 게이트: KSE 테스트서버 계정·API 키(사용자 준비 중), KSE 회신(사은품 자동 처리·자체 라벨 인정)
+  - [ ] 라벨 커스터마이징 항목, 재출력 사유·카운트 기준, 무게·원산지·배송서비스 기준
 - **AX 개발 환경 구축** (브랜치 `ax/setup-v2`): 공통 규칙·Codex 지시/검토 스크립트 추가, WSL·Hermes 설치와 연결 시험까지 완료. Hermes 전체 흐름은 미검증.
   - [x] Codex CLI 설치·ChatGPT 로그인
   - [x] Codex 검토 스크립트 연결 시험 (AX-20261014-01, `reports/AX-20261014-01/`) — 지적 2건 검증·수정
