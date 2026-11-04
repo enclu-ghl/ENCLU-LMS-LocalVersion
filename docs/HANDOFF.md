@@ -46,9 +46,13 @@
 
 ## 진행 중
 - **ERD 개선 (AX-20261102-01)** — 지시서 `plan.md`(Codex)·`plan-check.md`(Claude) 완료. 순서 A→D는 plan-check "수정한 실행 순서".
-  - [x] A: 피킹존 "전부 지우고 채우기" 삭제·upsert 한 트랜잭션 (웹앱 `app.py` `alloc_bulk_upsert_zone(replace_all=)`) — 로컬 수정·가짜 연결 테스트 통과, **미커밋**. 웹앱은 이 폴더에서 실행되므로 재부팅·재시작 시 그대로 운영 반영됨
-  - [ ] 사용자 답 대기: F동 동일 건물 여부 · 상품 마스터 원본(피킹존 파일로 충분?) · 옵션 중복 2종 정상 여부 · B·C 운영 DB 변경 승인(백업 후) · A 커밋/푸시
-  - [ ] B 동 코드 표 2개 → C 상품 마스터·옵션 표 → D FK 3개 + COMMENT (watchdog 무변경)
+  - [x] A: 피킹존 "전부 지우고 채우기" 삭제·upsert 한 트랜잭션 — 웹 6272ba1, 2026-11-04 재부팅으로 운영 반영
+  - [x] 사용자 답(11-04): F동은 재고할당·피킹존이 함께 있는 같은 건물(코드 표는 업무별 분리 유지) · 상품 원본 = 피킹존 파일 · 바노바기 BA2AMK00_179X 두 상품 정상(shared) · 스타일셀러 사본 05131 삭제
+  - [x] B·C 운영 DB 적용(백업 후, `migration_bc.sql`): uph_dong_code·alloc_dong_code·scm_product·scm_product_option + sku_daily_shipment.product_code COMMENT
+  - [x] 웹앱 코드: 동 목록·색을 표에서 읽음(실패 시 기본값) · 피킹존 저장(파일·단건 등록·수정)이 상품 마스터를 같은 트랜잭션에서 먼저 갱신 — Codex 검토 2건 반영(`review-check.md`)
+  - [x] 운영 재시작(2026-11-04 16:58, health ok)·웹 b963a71 푸시
+  - [ ] 재고할당 화면에서 피킹존 단건 수정 실사용 확인(사용자)
+  - [ ] D: FK 3개(매핑→uph 동, 옵션→상품, 피킹존→상품) — 웹앱 반영 후 별도 승인
 - **송장 시스템 설계 (AX-20261029-01)** — 설계 단계, 코드·DB 변경 없음. 방향은 DECISIONS 2026-10-29 (A안 직접 출력·KSE 1차·시책 자동 대조·출력 횟수 카운트).
   - [x] Codex 설계 지시서 `plan.md`, Claude `plan-check.md`
   - [x] 이지어드민 원본·정리 파일, KSE 목록, KSE 라벨(L10) 표본 확인 → `sample-waybill-upload.md`
