@@ -45,6 +45,10 @@
 - 기술 부채: Streamlit `use_container_width` deprecated(`width='stretch'`), `st.components.v1.html` → `st.iframe` 경고.
 
 ## 진행 중
+- **ERD 개선 (AX-20261102-01)** — 지시서 `plan.md`(Codex)·`plan-check.md`(Claude) 완료. 순서 A→D는 plan-check "수정한 실행 순서".
+  - [x] A: 피킹존 "전부 지우고 채우기" 삭제·upsert 한 트랜잭션 (웹앱 `app.py` `alloc_bulk_upsert_zone(replace_all=)`) — 로컬 수정·가짜 연결 테스트 통과, **미커밋**. 웹앱은 이 폴더에서 실행되므로 재부팅·재시작 시 그대로 운영 반영됨
+  - [ ] 사용자 답 대기: F동 동일 건물 여부 · 상품 마스터 원본(피킹존 파일로 충분?) · 옵션 중복 2종 정상 여부 · B·C 운영 DB 변경 승인(백업 후) · A 커밋/푸시
+  - [ ] B 동 코드 표 2개 → C 상품 마스터·옵션 표 → D FK 3개 + COMMENT (watchdog 무변경)
 - **송장 시스템 설계 (AX-20261029-01)** — 설계 단계, 코드·DB 변경 없음. 방향은 DECISIONS 2026-10-29 (A안 직접 출력·KSE 1차·시책 자동 대조·출력 횟수 카운트).
   - [x] Codex 설계 지시서 `plan.md`, Claude `plan-check.md`
   - [x] 이지어드민 원본·정리 파일, KSE 목록, KSE 라벨(L10) 표본 확인 → `sample-waybill-upload.md`
