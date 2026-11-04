@@ -51,8 +51,9 @@
   - [x] B·C 운영 DB 적용(백업 후, `migration_bc.sql`): uph_dong_code·alloc_dong_code·scm_product·scm_product_option + sku_daily_shipment.product_code COMMENT
   - [x] 웹앱 코드: 동 목록·색을 표에서 읽음(실패 시 기본값) · 피킹존 저장(파일·단건 등록·수정)이 상품 마스터를 같은 트랜잭션에서 먼저 갱신 — Codex 검토 2건 반영(`review-check.md`)
   - [x] 운영 재시작(2026-11-04 16:58, health ok)·웹 b963a71 푸시
-  - [ ] 재고할당 화면에서 피킹존 단건 수정 실사용 확인(사용자)
-  - [ ] D: FK 3개(매핑→uph 동, 옵션→상품, 피킹존→상품) — 웹앱 반영 후 별도 승인
+  - [x] 재고할당 화면에서 피킹존 단건 수정 실사용 확인(사용자, 11-04 17:00)
+  - [x] D: FK 3개(매핑→uph 동, 옵션→상품, 피킹존→상품) 운영 적용(백업 후, `migration_d.sql`) — 외래키 4→7개
+  - [ ] 후속 후보: alloc_row·alloc_dong_status.dong→alloc_dong_code, manpower_log·uph_historical_summary.dong→uph_dong_code (쓰기 경로 확인 후) · ERD 페이지 갱신
 - **송장 시스템 설계 (AX-20261029-01)** — 설계 단계, 코드·DB 변경 없음. 방향은 DECISIONS 2026-10-29 (A안 직접 출력·KSE 1차·시책 자동 대조·출력 횟수 카운트).
   - [x] Codex 설계 지시서 `plan.md`, Claude `plan-check.md`
   - [x] 이지어드민 원본·정리 파일, KSE 목록, KSE 라벨(L10) 표본 확인 → `sample-waybill-upload.md`
