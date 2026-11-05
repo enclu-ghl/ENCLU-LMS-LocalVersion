@@ -108,16 +108,27 @@ def _run_checks(rep: Report) -> None:
     from . import child
     child.ensure_streams()
 
-    for label, mod in [
-        ("파일 찢기", "file_splitter_gui"),
-        ("박스크기추천", "main"),
-        ("상품매칭 런처", "macro_launcher"),
-        ("상품매칭 매크로", "matching_macro"),
-        ("UPH 제어판", "uph_control_panel"),
-        ("UPH watchdog", "watchdog_agent"),
-        ("UPH 다운로드 매크로", "uph_download_macro"),
+    # 소스(.py) 실행에서는 실제 실행 경로(modules._import, child.dispatch)처럼 프로그램 폴더를
+    # sys.path 맨 앞에 넣고 import한다(감사 F3: 이 단계가 없어 소스 모드에서 7개 모두 NOT_FOUND였음).
+    # "main"처럼 흔한 이름이 다른 폴더 모듈로 잡히지 않게 매번 그 폴더를 맨 앞에 둔다.
+    def load(mod, folder):
+        if not paths.IS_FROZEN:
+            d = os.path.join(paths.APP_DIR, folder)
+            if d in sys.path:
+                sys.path.remove(d)
+            sys.path.insert(0, d)
+        return importlib.import_module(mod) and ""
+
+    for label, mod, folder in [
+        ("파일 찢기", "file_splitter_gui", "주문파일정리 프로그램"),
+        ("박스크기추천", "main", "박스추천프로그램"),
+        ("상품매칭 런처", "macro_launcher", "자동 매칭 프로그램"),
+        ("상품매칭 매크로", "matching_macro", "자동 매칭 프로그램"),
+        ("UPH 제어판", "uph_control_panel", "UPH 시스템"),
+        ("UPH watchdog", "watchdog_agent", "UPH 시스템"),
+        ("UPH 다운로드 매크로", "uph_download_macro", "UPH 시스템"),
     ]:
-        rep.check("프로그램 적재", label, lambda m=mod: importlib.import_module(m) and "")
+        rep.check("프로그램 적재", label, lambda m=mod, f=folder: load(m, f))
 
     # ── 문자열로 지정돼 정적 분석이 못 잡는 것들: 실제로 굴려본다 ──
     def bs4_lxml():
