@@ -1,6 +1,6 @@
 # HANDOFF — 현재 상태와 다음 단계
 
-마지막 갱신: 2026-10-22 (Claude Code)
+마지막 갱신: 2026-11-05 (Claude Code)
 세션이 끝날 때마다 이 문서를 갱신한다. 비밀값·IP는 적지 않는다(공개 저장소).
 
 ## 운영 현황
@@ -44,6 +44,10 @@
 - 보안 권장(미실행): postgres 관리자 비밀번호 변경(과거 채팅 노출). 앱 로그인 화면 없음 — 사내망/Tailscale 보호에만 의존, 8501 포트포워딩 금지.
 - 기술 부채: Streamlit `use_container_width` deprecated(`width='stretch'`), `st.components.v1.html` → `st.iframe` 경고.
 
+## 2026년 방향 (2026-11-05 사용자 확정, DECISIONS 참고)
+- 올해: **기존 프로그램 안정화·사용성 개선**에 집중. 아래 "남은 일"과 감사 F3·F5, 기술 부채가 후보.
+- 송장 프로그램·AX 챗봇: **설계만** 올해 진행(직원 1명이 설계 지원), 구현은 2027년부터.
+
 ## 진행 중
 - **ERD 개선 (AX-20261102-01)** — 지시서 `plan.md`(Codex)·`plan-check.md`(Claude) 완료. 순서 A→D는 plan-check "수정한 실행 순서".
   - [x] A: 피킹존 "전부 지우고 채우기" 삭제·upsert 한 트랜잭션 — 웹 6272ba1, 2026-11-04 재부팅으로 운영 반영
@@ -53,7 +57,7 @@
   - [x] 운영 재시작(2026-11-04 16:58, health ok)·웹 b963a71 푸시
   - [x] 재고할당 화면에서 피킹존 단건 수정 실사용 확인(사용자, 11-04 17:00)
   - [x] D: FK 3개(매핑→uph 동, 옵션→상품, 피킹존→상품) 운영 적용(백업 후, `migration_d.sql`) — 외래키 4→7개
-  - [ ] 후속 후보: alloc_row·alloc_dong_status.dong→alloc_dong_code, manpower_log·uph_historical_summary.dong→uph_dong_code (쓰기 경로 확인 후) · ERD 페이지 갱신
+  - [x] E: 동 FK 4개(alloc_row·alloc_dong_status→alloc_dong_code, manpower_log·uph_historical_summary→uph_dong_code) 운영 적용(2026-11-05, 백업 후, `migration_e.sql`) — 외래키 7→11개. `기타`는 alloc_dong_code에 비활성 행으로 추가(FK만 통과, 화면 동 목록엔 안 나옴)
 - **송장 시스템 설계 (AX-20261029-01)** — 설계 단계, 코드·DB 변경 없음. 방향은 DECISIONS 2026-10-29 (A안 직접 출력·KSE 1차·시책 자동 대조·출력 횟수 카운트).
   - [x] Codex 설계 지시서 `plan.md`, Claude `plan-check.md`
   - [x] 이지어드민 원본·정리 파일, KSE 목록, KSE 라벨(L10) 표본 확인 → `sample-waybill-upload.md`
