@@ -23,5 +23,7 @@ FROM sales_channel_dong_mapping m
 WHERE o.dong = 'A동'
   AND regexp_replace(o.channel_name, '\s', '', 'g') = regexp_replace(m.channel_name, '\s', '', 'g')
   AND NOT EXISTS (SELECT 1 FROM order_status_log s WHERE s.invoice_no = o.invoice_no AND s.status = '배송');
+-- ⚠ 2026-11-17 결함 발견: 송장 행 invoice_no가 주문번호였다가 배송 때 실제 송장번호로 바뀐 주문은 위 조건을 통과해
+--   송장 행만 옮겨졌다(1행, id 921913 → A동 복원). 다시 쓸 때는 주문 키(order_key, 0패딩 무시)로도 배송 행을 확인할 것.
 
 COMMIT;
