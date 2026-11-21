@@ -304,7 +304,8 @@ def load_batch_usage_log(limit=100):
         params["n"] = limit
     with get_engine().connect() as conn:
         rows = conn.execute(text(query), params).fetchall()
-    return [{"id": r.id, "date": r.occurred_at.strftime("%Y-%m-%d %H:%M:%S"), "brand": r.brand,
+    # occurred_at은 UTC로 돌아오므로 KST로 바꿔서 보여준다 (기간 다운로드와 같은 기준).
+    return [{"id": r.id, "date": r.occurred_at.astimezone(KST_TZ).strftime("%Y-%m-%d %H:%M:%S"), "brand": r.brand,
               "code": r.code, "used_qty": r.used_qty, "reverted": r.reverted} for r in rows]
 
 
@@ -393,6 +394,36 @@ def revert_batch_usage(log_id):
             {"id": log_id}
         )
     return True, f"'{row.code}' {row.used_qty}개를 되돌렸습니다."
+
+
+def revert_batch_usage_many(log_ids):
+    """소진 로그 여러 건을 한 트랜잭션으로 되돌린다 — 중간에 실패하면 전부 취소(일부만 복원되는 일 없음).
+    이미 되돌린 로그·없는 로그는 건너뛴다. 반환: (되돌린 건수, 복원 수량 합계, 건너뛴 건수)
+    """
+    ids = sorted({int(i) for i in log_ids})
+    if not ids:
+        return 0, 0, 0
+    done, total = 0, 0
+    with get_engine().begin() as conn:
+        rows = conn.execute(
+            text("SELECT id, code, used_qty, reverted FROM fs_batch_usage_log "
+                 "WHERE id IN :ids ORDER BY id FOR UPDATE").bindparams(bindparam("ids", expanding=True)),
+            {"ids": ids}
+        ).fetchall()
+        for row in rows:
+            if row.reverted:
+                continue
+            conn.execute(text("""
+                INSERT INTO fs_batch_codes (code, remaining_qty)
+                VALUES (:code, :qty)
+                ON CONFLICT (code) DO UPDATE SET
+                    remaining_qty = fs_batch_codes.remaining_qty + EXCLUDED.remaining_qty,
+                    updated_at = NOW()
+            """), {"code": row.code, "qty": row.used_qty})
+            conn.execute(text("UPDATE fs_batch_usage_log SET reverted = TRUE WHERE id=:id"), {"id": row.id})
+            done += 1
+            total += int(row.used_qty or 0)
+    return done, total, len(ids) - done
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1199,12 +1230,14 @@ class BatchTab(ttk.Frame):
         # ── 소진 로그 (선택해서 되돌리기 가능) ──
         ttk.Label(self, text="📋 소진 로그 (언제 · 어느 브랜드 · 어떤 코드 · 몇 개)", font=("맑은 고딕", 10, "bold")).pack(anchor="w", pady=(14, 4))
         ttk.Label(
-            self, text="파일을 잘못 잘랐을 때, 아래에서 해당 소진 건을 선택하고 '되돌리기'를 누르면 그 수량만큼 자동으로 복원됩니다.",
+            self, text="파일을 잘못 잘랐을 때, 아래에서 해당 소진 건을 선택하고 '되돌리기'를 누르면 그 수량만큼 자동으로 복원됩니다.\n"
+                       "Ctrl/Shift+클릭으로 여러 건 선택, '같은 실행 전체 선택'은 고른 행과 같은 시각·브랜드의 소진 건을 모두 선택합니다.",
             foreground="#888", font=("맑은 고딕", 8)
         ).pack(anchor="w")
         log_frame = ttk.Frame(self)
         log_frame.pack(fill="both", expand=True, pady=(4, 0))
-        self.log_tree = ttk.Treeview(log_frame, columns=("date", "brand", "code", "used_qty", "status"), show="headings", height=6)
+        self.log_tree = ttk.Treeview(log_frame, columns=("date", "brand", "code", "used_qty", "status"),
+                                     show="headings", height=6, selectmode="extended")
         self.log_tree.heading("date", text="일시")
         self.log_tree.heading("brand", text="브랜드")
         self.log_tree.heading("code", text="옵션코드")
@@ -1220,7 +1253,12 @@ class BatchTab(ttk.Frame):
         log_scroll.pack(side="right", fill="y")
         self.log_tree.config(yscrollcommand=log_scroll.set)
 
-        ttk.Button(self, text="↩️ 선택 소진 되돌리기", command=self.revert_selected_usage).pack(fill="x", pady=(4, 0))
+        log_btn_row = ttk.Frame(self)
+        log_btn_row.pack(fill="x", pady=(4, 0))
+        ttk.Button(log_btn_row, text="☑️ 같은 실행 전체 선택", command=self.select_same_run).pack(
+            side="left", fill="x", expand=True, padx=(0, 4))
+        ttk.Button(log_btn_row, text="↩️ 선택 소진 되돌리기", command=self.revert_selected_usage).pack(
+            side="left", fill="x", expand=True)
 
         # ── 기간별 소진 내역 다운로드 ──
         # 매일 찢기가 끝나면 "오늘 얼마나 빠져나갔나"를 받아보는 용도라 기본값을 오늘로 맞춘다.
@@ -1311,6 +1349,8 @@ class BatchTab(ttk.Frame):
             self.tree.bind("<<TreeviewSelect>>", self.on_select)
 
     def _refresh_usage_log(self, usage):
+        # 5초마다 다시 그리므로, 여러 건을 골라두는 동안 선택이 풀리지 않게 선택한 로그 id를 다시 선택한다.
+        selected = set(self.log_tree.selection())
         self.log_tree.delete(*self.log_tree.get_children())
         for entry in usage:  # load_batch_usage_log()가 이미 최신순으로 줌
             status = "↩️ 되돌림" if entry.get("reverted") else "정상"
@@ -1318,37 +1358,66 @@ class BatchTab(ttk.Frame):
                 entry.get("date", ""), entry.get("brand", ""),
                 entry.get("code", ""), entry.get("used_qty", ""), status
             ))
+        keep = [iid for iid in selected if self.log_tree.exists(iid)]
+        if keep:
+            self.log_tree.selection_set(keep)
+
+    def select_same_run(self):
+        """고른 행과 같은 일시·브랜드(= 한 번의 찢기 실행)인 소진 건을 모두 선택. 되돌린 건은 빼고 고른다."""
+        sel = self.log_tree.selection()
+        if not sel:
+            messagebox.showwarning("선택 필요", "기준이 될 소진 내역을 하나 먼저 선택해주세요.")
+            return
+        runs = {tuple(self.log_tree.item(i, "values")[:2]) for i in sel}
+        same = [iid for iid in self.log_tree.get_children()
+                if tuple(self.log_tree.item(iid, "values")[:2]) in runs
+                and self.log_tree.item(iid, "values")[4] != "↩️ 되돌림"]
+        if not same:
+            messagebox.showinfo("선택할 내역 없음", "같은 실행의 소진 건이 모두 이미 되돌려져 있습니다.")
+            return
+        self.log_tree.selection_set(same)
+        self.log_tree.see(same[0])
 
     def revert_selected_usage(self):
         sel = self.log_tree.selection()
         if not sel:
             messagebox.showwarning("선택 필요", "되돌릴 소진 내역을 먼저 선택해주세요.")
             return
-        log_id = int(sel[0])
-        values = self.log_tree.item(sel[0], "values")
-        date_str, brand, code, used_qty, status = values
-        if status == "↩️ 되돌림":
-            messagebox.showwarning("이미 되돌림", "이 항목은 이미 되돌려진 내역입니다.")
+        rows = [(iid, self.log_tree.item(iid, "values")) for iid in sel]
+        targets = [(iid, v) for iid, v in rows if v[4] != "↩️ 되돌림"]
+        skipped = len(rows) - len(targets)
+        if not targets:
+            messagebox.showwarning("이미 되돌림", "선택한 항목은 모두 이미 되돌려진 내역입니다.")
             return
 
-        if not messagebox.askyesno(
-            "되돌리기 확인",
-            f"이 소진 내역을 되돌릴까요?\n\n일시: {date_str}\n브랜드: {brand}\n옵션코드: {code}\n소진수량: {used_qty}\n\n"
-            f"'{code}' 코드의 남은수량에 {used_qty}개가 다시 더해집니다."
-        ):
+        if len(targets) == 1:
+            date_str, brand, code, used_qty, _ = targets[0][1]
+            msg = (f"이 소진 내역을 되돌릴까요?\n\n일시: {date_str}\n브랜드: {brand}\n옵션코드: {code}\n소진수량: {used_qty}\n\n"
+                   f"'{code}' 코드의 남은수량에 {used_qty}개가 다시 더해집니다.")
+        else:
+            total = sum(int(v[3] or 0) for _, v in targets)
+            runs = sorted({f"{v[0]} · {v[1]}" for _, v in targets})
+            run_lines = "\n".join(runs[:5]) + (f"\n외 {len(runs) - 5}개 실행" if len(runs) > 5 else "")
+            msg = (f"선택한 소진 내역 {len(targets)}건을 한 번에 되돌릴까요?\n\n{run_lines}\n\n"
+                   f"총 {total:,}개가 각 옵션코드의 남은수량에 다시 더해집니다.")
+        if skipped:
+            msg += f"\n\n(이미 되돌린 {skipped}건은 제외됩니다)"
+        if not messagebox.askyesno("되돌리기 확인", msg):
             return
 
         try:
-            ok, msg = revert_batch_usage(log_id)
+            done, qty, already = revert_batch_usage_many([int(iid) for iid, _ in targets])
         except Exception as e:
-            messagebox.showerror("DB 오류", f"되돌리기 실패:\n{e}")
+            messagebox.showerror("DB 오류", f"되돌리기 실패 (아무것도 바뀌지 않았습니다):\n{e}")
             return
 
-        if not ok:
-            messagebox.showwarning("되돌리기 불가", msg)
+        if done == 0:
+            messagebox.showwarning("되돌리기 불가", "선택한 내역이 이미 되돌려져 있습니다. (다른 PC에서 먼저 처리됐을 수 있음)")
         else:
-            messagebox.showinfo("완료", msg)
+            note = f"\n(그사이 이미 되돌려진 {already}건은 건너뜀)" if already else ""
+            messagebox.showinfo("완료", f"소진 내역 {done}건, 총 {qty:,}개를 되돌렸습니다.{note}")
 
+        self.log_tree.selection_remove(self.log_tree.selection())
         self.refresh()
         self.on_change()
 
