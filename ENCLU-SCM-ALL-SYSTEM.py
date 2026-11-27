@@ -43,6 +43,7 @@ WEB_SYSTEMS = {
     "uph_web":       "uph",
     "supplies_mgmt": "equipment",
     "stock_alloc":   "alloc",
+    "weekly_plan":   "weekly",
 }
 
 # 업무 프로그램은 더 이상 subprocess로 외부 .py를 실행하지 않는다.
@@ -149,6 +150,16 @@ APPS = [
         "title": "비품/소모품\n관리 · 분석",
         "desc": "주기 체크로 사용량 자동 계산 ·\n소진 예상 · 발주 목록 (웹)",
         "icon": "🧻",
+        "badge_color": "#2E7D32",
+        "badge_bg": "#E8F5E9",
+        "status_text": "브라우저에서 열림",
+        "mode": "web",
+    },
+    {
+        "key": "weekly_plan",
+        "title": "주간 계획\n· 체크리스트",
+        "desc": "팀 주간 할일 · 우선순위 ·\n체크리스트 달성률 (웹)",
+        "icon": "📅",
         "badge_color": "#2E7D32",
         "badge_bg": "#E8F5E9",
         "status_text": "브라우저에서 열림",
