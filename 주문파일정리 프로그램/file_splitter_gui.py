@@ -1985,7 +1985,7 @@ class OrderTab(ttk.Frame):
         # 싱글 기준값 (모드4,5,6에서만 표시)
         self.single_row = ttk.Frame(opt_frame)
         ttk.Label(self.single_row, text="싱글 기준값", width=10).pack(side="left")
-        self.single_threshold_var = tk.IntVar(value=5)
+        self.single_threshold_var = tk.StringVar(value="5")  # IntVar는 빈칸이면 영어 Tcl 오류 — 문자열로 받고 실행 시 검사
         ttk.Spinbox(self.single_row, from_=2, to=999, textvariable=self.single_threshold_var, width=8).pack(side="left")
         ttk.Label(self.single_row, text="건 이상이면 싱글로 분리", foreground="#888").pack(side="left", padx=(6, 0))
 
@@ -2167,6 +2167,23 @@ class OrderTab(ttk.Frame):
         if mode not in IMPLEMENTED_MODES:
             messagebox.showinfo("준비중", f"'{mode}' 모드는 아직 개발 중입니다.")
             return
+
+        # 싱글 기준값: 칸을 비우거나 글자를 넣으면 IntVar.get()이 영어 Tcl 오류
+        # ("expected floating-point number but got ...")로 죽었다 → 실행 전에 검사하고 한국어로 안내.
+        # 값은 메인 스레드에서 읽어 작업 스레드로 넘긴다(작업 스레드에서 tk 변수를 읽지 않도록).
+        raw_threshold = self.single_threshold_var.get().strip()
+        if mode in MODES_NEED_SINGLE_THRESHOLD:
+            try:
+                single_threshold = int(raw_threshold)
+            except ValueError:
+                single_threshold = None
+            if single_threshold is None or single_threshold < 2:
+                messagebox.showwarning("입력 오류", "싱글 기준값은 2 이상의 숫자로 입력해주세요.\n(현재 칸이 비어 있거나 숫자가 아닙니다)")
+                return
+        else:
+            # 모드1~3(정리/합포·일괄·단품)은 싱글 분류가 없다 — 칸 값과 무관하게 넘기지 않는다.
+            single_threshold = None
+        self._single_threshold = single_threshold
 
         # 실제 처리(파일 읽기·API 호출·저장)는 시간이 걸릴 수 있어서 화면이 안 멈추도록 백그라운드 스레드에서 실행.
         # 실행 중 중복 클릭 방지를 위해 버튼도 잠가둠.
@@ -2358,7 +2375,7 @@ class OrderTab(ttk.Frame):
                 self.after(0, lambda: messagebox.showinfo("완료", f"처리 완료!\n\n저장 위치: {out_path}\n\n예외 {len(errors)}건 (로그 확인)"))
             else:
                 # 모드2~6: 합포/일괄/싱글/단품으로 분류해서 각각 파일로 저장
-                single_threshold = self.single_threshold_var.get()
+                single_threshold = self._single_threshold  # run_process에서 검사·저장한 값
 
                 # 일괄 차감은 파일을 쓰기 전에 일어나기 때문에, 저장이 실패하면 코드만 날아간다.
                 # 실제로 가장 흔한 실패는 '같은 이름의 파일을 엑셀로 열어둔 상태'다 —
